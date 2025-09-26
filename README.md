@@ -1,4 +1,4 @@
-# Custom K-Means for Text
+# Sparse text K-means
 A from-scratch K-Means implementation specialized for text vectors (sparse and dense), plus a lightweight evaluation suite.
 
 ## Technical Components
