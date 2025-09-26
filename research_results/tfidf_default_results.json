@@ -1,0 +1,599 @@
+{
+  "vectorizer": "tfidf_default",
+  "model_results": {
+    "custom_kmeans": {
+      "aggregated": {
+        "homogeneity": {
+          "mean": 0.2935844123867544,
+          "std": 0.008903077439174368,
+          "min": 0.2805199181590429,
+          "max": 0.30803145989676733
+        },
+        "completeness": {
+          "mean": 0.36948384853507393,
+          "std": 0.010357971020686165,
+          "min": 0.3557365602892577,
+          "max": 0.39020230727826877
+        },
+        "v_measure": {
+          "mean": 0.3271137088649739,
+          "std": 0.007967386097946259,
+          "min": 0.31473333961382155,
+          "max": 0.33670827079982857
+        },
+        "adjusted_rand": {
+          "mean": 0.07328942185430551,
+          "std": 0.009113795141381135,
+          "min": 0.06260676372289906,
+          "max": 0.08944837591732209
+        },
+        "silhouette": {
+          "mean": 0.004775191471456061,
+          "std": 0.002395502945170772,
+          "min": 0.00043129307863449146,
+          "max": 0.00690373384985004
+        }
+      },
+      "seed_results": [
+        {
+          "seed": 0,
+          "metrics": {
+            "homogeneity": 0.29350361760572463,
+            "completeness": 0.3599508812320499,
+            "v_measure": 0.32334886664603985,
+            "adjusted_rand": 0.08312328105960677,
+            "silhouette": 0.0013326366036460892
+          },
+          "inertia": 17704.689636827385,
+          "runtime_sec": 24.821764042018913,
+          "iterations": 49,
+          "converged": true
+        },
+        {
+          "seed": 1,
+          "metrics": {
+            "homogeneity": 0.29963962082558154,
+            "completeness": 0.3703462911356585,
+            "v_measure": 0.3312619572110316,
+            "adjusted_rand": 0.08062240180050195,
+            "silhouette": 0.002931629165893647
+          },
+          "inertia": 17699.60438308622,
+          "runtime_sec": 20.407343583996408,
+          "iterations": 46,
+          "converged": true
+        },
+        {
+          "seed": 2,
+          "metrics": {
+            "homogeneity": 0.30803145989676733,
+            "completeness": 0.36320181100992377,
+            "v_measure": 0.3333493404801409,
+            "adjusted_rand": 0.08944837591732209,
+            "silhouette": 0.00043129307863449146
+          },
+          "inertia": 17704.967437078667,
+          "runtime_sec": 15.54296550003346,
+          "iterations": 35,
+          "converged": true
+        },
+        {
+          "seed": 3,
+          "metrics": {
+            "homogeneity": 0.29611319992713514,
+            "completeness": 0.39020230727826877,
+            "v_measure": 0.33670827079982857,
+            "adjusted_rand": 0.06380388037949816,
+            "silhouette": 0.00690373384985004
+          },
+          "inertia": 17701.842142497102,
+          "runtime_sec": 22.84155341598671,
+          "iterations": 59,
+          "converged": true
+        },
+        {
+          "seed": 4,
+          "metrics": {
+            "homogeneity": 0.2932656044032857,
+            "completeness": 0.37432868844582334,
+            "v_measure": 0.32887557679396096,
+            "adjusted_rand": 0.0729918115690989,
+            "silhouette": 0.006685261700144631
+          },
+          "inertia": 17705.82271300882,
+          "runtime_sec": 17.533273875014856,
+          "iterations": 82,
+          "converged": true
+        },
+        {
+          "seed": 5,
+          "metrics": {
+            "homogeneity": 0.28405906225751143,
+            "completeness": 0.3612646337986613,
+            "v_measure": 0.31804346789310617,
+            "adjusted_rand": 0.06369470045054089,
+            "silhouette": 0.006650159840376456
+          },
+          "inertia": 17708.642329124592,
+          "runtime_sec": 18.085740750015248,
+          "iterations": 31,
+          "converged": true
+        },
+        {
+          "seed": 6,
+          "metrics": {
+            "homogeneity": 0.2822055186155765,
+            "completeness": 0.3557365602892577,
+            "v_measure": 0.31473333961382155,
+            "adjusted_rand": 0.06907693218595161,
+            "silhouette": 0.005847984617496649
+          },
+          "inertia": 17706.265866122492,
+          "runtime_sec": 17.222459916956723,
+          "iterations": 67,
+          "converged": true
+        },
+        {
+          "seed": 7,
+          "metrics": {
+            "homogeneity": 0.3010331935375829,
+            "completeness": 0.3802584936377788,
+            "v_measure": 0.33603941120774894,
+            "adjusted_rand": 0.07704377930376471,
+            "silhouette": 0.005661552648669816
+          },
+          "inertia": 17702.60351970037,
+          "runtime_sec": 25.04631970799528,
+          "iterations": 64,
+          "converged": true
+        },
+        {
+          "seed": 8,
+          "metrics": {
+            "homogeneity": 0.2805199181590429,
+            "completeness": 0.36765656305983474,
+            "v_measure": 0.3182311977325601,
+            "adjusted_rand": 0.06260676372289906,
+            "silhouette": 0.006738138859540585
+          },
+          "inertia": 17700.678344384658,
+          "runtime_sec": 24.776210582989734,
+          "iterations": 43,
+          "converged": true
+        },
+        {
+          "seed": 9,
+          "metrics": {
+            "homogeneity": 0.2974729286393361,
+            "completeness": 0.37189225546348276,
+            "v_measure": 0.33054566027150045,
+            "adjusted_rand": 0.07048229215387104,
+            "silhouette": 0.004569524350308203
+          },
+          "inertia": 17704.263662739642,
+          "runtime_sec": 21.890943417034578,
+          "iterations": 45,
+          "converged": true
+        }
+      ]
+    },
+    "sklearn_kmeans": {
+      "aggregated": {
+        "homogeneity": {
+          "mean": 0.29536890110725633,
+          "std": 0.018333301881268086,
+          "min": 0.2651901409733099,
+          "max": 0.3128109151870644
+        },
+        "completeness": {
+          "mean": 0.3697495129458127,
+          "std": 0.020335811207144724,
+          "min": 0.3354181930629236,
+          "max": 0.3898305312236855
+        },
+        "v_measure": {
+          "mean": 0.3283519097696186,
+          "std": 0.018948165329027048,
+          "min": 0.2961983471178521,
+          "max": 0.34624864029163566
+        },
+        "adjusted_rand": {
+          "mean": 0.07502738483737388,
+          "std": 0.007663710986866663,
+          "min": 0.06140116463249849,
+          "max": 0.08716823692389185
+        },
+        "silhouette": {
+          "mean": 0.0052595418771002505,
+          "std": 0.0014370805004838714,
+          "min": 0.0032509935499496533,
+          "max": 0.00819802229833561
+        }
+      },
+      "seed_results": [
+        {
+          "seed": 0,
+          "metrics": {
+            "homogeneity": 0.2796502330131546,
+            "completeness": 0.35140833576554464,
+            "v_measure": 0.3114494528448799,
+            "adjusted_rand": 0.0699417657288534,
+            "silhouette": 0.005875105793093379
+          },
+          "inertia": 17708.963939588313,
+          "runtime_sec": 3.72965029097395,
+          "iterations": null,
+          "converged": null
+        },
+        {
+          "seed": 1,
+          "metrics": {
+            "homogeneity": 0.2793623872032527,
+            "completeness": 0.3422668136371052,
+            "v_measure": 0.3076318615304818,
+            "adjusted_rand": 0.06847267752952309,
+            "silhouette": 0.004499598820908487
+          },
+          "inertia": 17706.43907186467,
+          "runtime_sec": 2.5596584159648046,
+          "iterations": null,
+          "converged": null
+        },
+        {
+          "seed": 2,
+          "metrics": {
+            "homogeneity": 0.2651901409733099,
+            "completeness": 0.3354181930629236,
+            "v_measure": 0.2961983471178521,
+            "adjusted_rand": 0.06934661941736474,
+            "silhouette": 0.003664629747060621
+          },
+          "inertia": 17710.56230021113,
+          "runtime_sec": 2.8951090840273537,
+          "iterations": null,
+          "converged": null
+        },
+        {
+          "seed": 3,
+          "metrics": {
+            "homogeneity": 0.30761062379609916,
+            "completeness": 0.3822925398106141,
+            "v_measure": 0.34090942858982354,
+            "adjusted_rand": 0.07948642579587892,
+            "silhouette": 0.004144373696663896
+          },
+          "inertia": 17699.839573540317,
+          "runtime_sec": 3.924523791996762,
+          "iterations": null,
+          "converged": null
+        },
+        {
+          "seed": 4,
+          "metrics": {
+            "homogeneity": 0.27453338875016847,
+            "completeness": 0.36391207632906003,
+            "v_measure": 0.3129664818257543,
+            "adjusted_rand": 0.06140116463249849,
+            "silhouette": 0.00819802229833561
+          },
+          "inertia": 17706.075394434854,
+          "runtime_sec": 3.3074593750061467,
+          "iterations": null,
+          "converged": null
+        },
+        {
+          "seed": 5,
+          "metrics": {
+            "homogeneity": 0.3062118960321625,
+            "completeness": 0.38046502221512074,
+            "v_measure": 0.339323815117538,
+            "adjusted_rand": 0.07494690040999259,
+            "silhouette": 0.005838796583891163
+          },
+          "inertia": 17700.475695424717,
+          "runtime_sec": 2.9612727500498295,
+          "iterations": null,
+          "converged": null
+        },
+        {
+          "seed": 6,
+          "metrics": {
+            "homogeneity": 0.3088638497123209,
+            "completeness": 0.3898305312236855,
+            "v_measure": 0.3446558664114246,
+            "adjusted_rand": 0.08108964480252498,
+            "silhouette": 0.005840605427502951
+          },
+          "inertia": 17721.842512508414,
+          "runtime_sec": 2.8591055829892866,
+          "iterations": null,
+          "converged": null
+        },
+        {
+          "seed": 7,
+          "metrics": {
+            "homogeneity": 0.307414199557496,
+            "completeness": 0.38968422664644814,
+            "v_measure": 0.34369454903819413,
+            "adjusted_rand": 0.07802980242966731,
+            "silhouette": 0.005964844446654303
+          },
+          "inertia": 17702.104260993645,
+          "runtime_sec": 3.0036837910301983,
+          "iterations": null,
+          "converged": null
+        },
+        {
+          "seed": 8,
+          "metrics": {
+            "homogeneity": 0.3128109151870644,
+            "completeness": 0.38769057982951544,
+            "v_measure": 0.34624864029163566,
+            "adjusted_rand": 0.08039061070354334,
+            "silhouette": 0.005318448406942433
+          },
+          "inertia": 17706.81202444336,
+          "runtime_sec": 3.1316570410272107,
+          "iterations": null,
+          "converged": null
+        },
+        {
+          "seed": 9,
+          "metrics": {
+            "homogeneity": 0.3120413768475347,
+            "completeness": 0.3745268109381094,
+            "v_measure": 0.3404406549286018,
+            "adjusted_rand": 0.08716823692389185,
+            "silhouette": 0.0032509935499496533
+          },
+          "inertia": 17707.647817643316,
+          "runtime_sec": 3.247238042007666,
+          "iterations": null,
+          "converged": null
+        }
+      ]
+    },
+    "minibatch_kmeans": {
+      "aggregated": {
+        "homogeneity": {
+          "mean": 0.005370458345811181,
+          "std": 0.00539444697268017,
+          "min": 0.0010508800205982396,
+          "max": 0.013650705613313305
+        },
+        "completeness": {
+          "mean": 0.18606437928288455,
+          "std": 0.11886117973360627,
+          "min": 0.04527952760030421,
+          "max": 0.2820543718202809
+        },
+        "v_measure": {
+          "mean": 0.008931409368411308,
+          "std": 0.008404969679582814,
+          "min": 0.0020937540815316458,
+          "max": 0.02129603336422711
+        },
+        "adjusted_rand": {
+          "mean": 0.0021783288492058252,
+          "std": 0.0028597995358717854,
+          "min": -7.847194985998054e-06,
+          "max": 0.006583353213929138
+        },
+        "silhouette": {
+          "mean": -0.012659230501608752,
+          "std": 0.03420537806728009,
+          "min": -0.10932550213592122,
+          "max": 0.006754183554980673
+        }
+      },
+      "seed_results": [
+        {
+          "seed": 0,
+          "metrics": {
+            "homogeneity": 0.011860430327890508,
+            "completeness": 0.05200876257553402,
+            "v_measure": 0.019315926096001957,
+            "adjusted_rand": 0.005704000973874348,
+            "silhouette": -0.008801416656522135
+          },
+          "inertia": 18073.736183183762,
+          "runtime_sec": 0.46409345796564594,
+          "iterations": null,
+          "converged": null
+        },
+        {
+          "seed": 1,
+          "metrics": {
+            "homogeneity": 0.010160497521900784,
+            "completeness": 0.04527952760030421,
+            "v_measure": 0.01659676477280179,
+            "adjusted_rand": 0.004569735386334305,
+            "silhouette": -0.005757305403033218
+          },
+          "inertia": 18074.817416461934,
+          "runtime_sec": 0.4204222080297768,
+          "iterations": null,
+          "converged": null
+        },
+        {
+          "seed": 2,
+          "metrics": {
+            "homogeneity": 0.013650705613313305,
+            "completeness": 0.048407592136127185,
+            "v_measure": 0.02129603336422711,
+            "adjusted_rand": 0.006583353213929138,
+            "silhouette": -0.10932550213592122
+          },
+          "inertia": 18073.59197724177,
+          "runtime_sec": 0.43692441697930917,
+          "iterations": null,
+          "converged": null
+        },
+        {
+          "seed": 3,
+          "metrics": {
+            "homogeneity": 0.001288376274779043,
+            "completeness": 0.27686319057124276,
+            "v_measure": 0.0025648172335414592,
+            "adjusted_rand": -7.847194985998054e-06,
+            "silhouette": -0.0018701105249816945
+          },
+          "inertia": 18099.524739111723,
+          "runtime_sec": 0.48499679198721424,
+          "iterations": null,
+          "converged": null
+        },
+        {
+          "seed": 4,
+          "metrics": {
+            "homogeneity": 0.0011135491818917813,
+            "completeness": 0.2796276718305169,
+            "v_measure": 0.0022182646643644304,
+            "adjusted_rand": -3.718273475838526e-09,
+            "silhouette": -3.237769806778741e-05
+          },
+          "inertia": 18100.56320804111,
+          "runtime_sec": 0.42485441599274054,
+          "iterations": null,
+          "converged": null
+        },
+        {
+          "seed": 5,
+          "metrics": {
+            "homogeneity": 0.0010508800205982396,
+            "completeness": 0.2748308041061556,
+            "v_measure": 0.0020937540815316458,
+            "adjusted_rand": -5.823505352399303e-06,
+            "silhouette": -0.0010541521227426039
+          },
+          "inertia": 18102.318290493742,
+          "runtime_sec": 0.4532302499865182,
+          "iterations": null,
+          "converged": null
+        },
+        {
+          "seed": 6,
+          "metrics": {
+            "homogeneity": 0.0014764402097907023,
+            "completeness": 0.2790582338997348,
+            "v_measure": 0.002937339554980576,
+            "adjusted_rand": -1.5410631886954986e-06,
+            "silhouette": -0.00023763727908749366
+          },
+          "inertia": 18099.517364238924,
+          "runtime_sec": 0.3951312080025673,
+          "iterations": null,
+          "converged": null
+        },
+        {
+          "seed": 7,
+          "metrics": {
+            "homogeneity": 0.0012178736505923386,
+            "completeness": 0.2820543718202809,
+            "v_measure": 0.002425275281757983,
+            "adjusted_rand": -1.5219616756321462e-06,
+            "silhouette": -0.0030191996283704834
+          },
+          "inertia": 18100.285876315673,
+          "runtime_sec": 0.40966150001622736,
+          "iterations": null,
+          "converged": null
+        },
+        {
+          "seed": 8,
+          "metrics": {
+            "homogeneity": 0.001373033527106504,
+            "completeness": 0.27623592329786184,
+            "v_measure": 0.002732485208093056,
+            "adjusted_rand": 1.3604479086685536e-05,
+            "silhouette": 0.006754183554980673
+          },
+          "inertia": 18100.676671414545,
+          "runtime_sec": 0.4491664170054719,
+          "iterations": null,
+          "converged": null
+        },
+        {
+          "seed": 9,
+          "metrics": {
+            "homogeneity": 0.0105127971302486,
+            "completeness": 0.04627771499108738,
+            "v_measure": 0.017133433426813092,
+            "adjusted_rand": 0.004929331882309975,
+            "silhouette": -0.0032487871223415184
+          },
+          "inertia": 18076.252882027526,
+          "runtime_sec": 0.44677566696191207,
+          "iterations": null,
+          "converged": null
+        }
+      ]
+    }
+  },
+  "significance": {
+    "sklearn_kmeans": {
+      "homogeneity": {
+        "mean_difference": -0.0017844887205019032,
+        "ci_low": -0.018504755688612377,
+        "ci_high": 0.01730074503479596,
+        "p_value": 0.8227376484756587
+      },
+      "completeness": {
+        "mean_difference": -0.00026566441073872513,
+        "ci_low": -0.016061730791437627,
+        "ci_high": 0.015432140400124975,
+        "p_value": 0.9684126258579295
+      },
+      "v_measure": {
+        "mean_difference": -0.0012382009046446763,
+        "ci_low": -0.017700683627201612,
+        "ci_high": 0.015933639803502014,
+        "p_value": 0.8666932842936422
+      },
+      "adjusted_rand": {
+        "mean_difference": -0.0017379629830683516,
+        "ci_low": -0.011922525531202682,
+        "ci_high": 0.009455794369944174,
+        "p_value": 0.7169679898063361
+      },
+      "silhouette": {
+        "mean_difference": -0.00048435040564418896,
+        "ci_low": -0.002154419213447469,
+        "ci_high": 0.0012249427318492252,
+        "p_value": 0.5133757903756218
+      }
+    },
+    "minibatch_kmeans": {
+      "homogeneity": {
+        "mean_difference": 0.28821395404094324,
+        "ci_low": 0.28282797393929776,
+        "ci_high": 0.2936474432201789,
+        "p_value": 4.847177837192361e-16
+      },
+      "completeness": {
+        "mean_difference": 0.18341946925218938,
+        "ci_low": 0.09969108891949455,
+        "ci_high": 0.2747023424812588,
+        "p_value": 0.0007651238404993609
+      },
+      "v_measure": {
+        "mean_difference": 0.31818229949656257,
+        "ci_low": 0.31086156540285814,
+        "ci_high": 0.3257067137319424,
+        "p_value": 4.5780632793024516e-15
+      },
+      "adjusted_rand": {
+        "mean_difference": 0.0711110930050997,
+        "ci_low": 0.06605110357706401,
+        "ci_high": 0.07649374387140329,
+        "p_value": 1.5795740729243e-10
+      },
+      "silhouette": {
+        "mean_difference": 0.017434421973064808,
+        "ci_low": 0.005037052931441516,
+        "ci_high": 0.048161174354041394,
+        "p_value": 0.12463261089189039
+      }
+    }
+  }
+}
