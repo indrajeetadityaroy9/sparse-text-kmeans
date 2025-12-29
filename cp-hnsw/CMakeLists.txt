@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.16)
+cmake_minimum_required(VERSION 3.18)
 project(cp-hnsw VERSION 1.0.0 LANGUAGES CXX)
 
 # C++ Standard
@@ -7,10 +7,39 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 # Options
-option(CPHNSW_USE_AVX512 "Enable AVX-512 support" OFF)
+option(CPHNSW_USE_AVX512 "Enable AVX-512 support" ON)
+option(CPHNSW_USE_OPENMP "Enable OpenMP parallelization" ON)
+option(CPHNSW_USE_CUDA "Enable CUDA GPU acceleration" ON)
 option(CPHNSW_BUILD_TESTS "Build unit tests" ON)
 option(CPHNSW_BUILD_BENCHMARKS "Build benchmarks" OFF)
 option(CPHNSW_BUILD_EVAL "Build evaluation framework" ON)
+
+# CUDA setup (before other compiler flags)
+if(CPHNSW_USE_CUDA)
+    include(CheckLanguage)
+    check_language(CUDA)
+    if(CMAKE_CUDA_COMPILER)
+        enable_language(CUDA)
+        set(CMAKE_CUDA_STANDARD 17)
+        set(CMAKE_CUDA_STANDARD_REQUIRED ON)
+
+        # Find CUDA toolkit for cuBLAS
+        find_package(CUDAToolkit REQUIRED)
+
+        message(STATUS "CUDA found: ${CMAKE_CUDA_COMPILER_VERSION}")
+        message(STATUS "CUDA architectures: ${CMAKE_CUDA_ARCHITECTURES}")
+
+        # Set CUDA architectures (H100 = sm_90, A100 = sm_80, V100 = sm_70)
+        if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
+            set(CMAKE_CUDA_ARCHITECTURES "70;80;90")
+        endif()
+
+        add_compile_definitions(CPHNSW_HAS_CUDA=1)
+    else()
+        message(WARNING "CUDA requested but not found, disabling GPU support")
+        set(CPHNSW_USE_CUDA OFF)
+    endif()
+endif()
 
 # Compiler flags
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
@@ -43,12 +72,48 @@ elseif(MSVC)
     endif()
 endif()
 
+# OpenMP support
+if(CPHNSW_USE_OPENMP)
+    find_package(OpenMP REQUIRED)
+    if(OpenMP_CXX_FOUND)
+        message(STATUS "OpenMP found: ${OpenMP_CXX_VERSION}")
+    endif()
+endif()
+
 # Header-only library target
 add_library(cphnsw INTERFACE)
 target_include_directories(cphnsw INTERFACE
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>
 )
+
+# Add OpenMP to the interface library
+if(CPHNSW_USE_OPENMP AND OpenMP_CXX_FOUND)
+    target_link_libraries(cphnsw INTERFACE OpenMP::OpenMP_CXX)
+    target_compile_definitions(cphnsw INTERFACE CPHNSW_USE_OPENMP=1)
+endif()
+
+# CUDA library (compiled, not header-only)
+if(CPHNSW_USE_CUDA)
+    add_library(cphnsw_cuda STATIC
+        src/cuda/gpu_encoder.cu
+    )
+    target_include_directories(cphnsw_cuda PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+    )
+    target_link_libraries(cphnsw_cuda PUBLIC
+        CUDA::cudart
+        CUDA::cublas
+    )
+    set_target_properties(cphnsw_cuda PROPERTIES
+        CUDA_SEPARABLE_COMPILATION ON
+        POSITION_INDEPENDENT_CODE ON
+    )
+    # Add OpenMP to CUDA library for hybrid CPU+GPU
+    if(CPHNSW_USE_OPENMP AND OpenMP_CXX_FOUND)
+        target_link_libraries(cphnsw_cuda PUBLIC OpenMP::OpenMP_CXX)
+    endif()
+endif()
 
 # Evaluation executable
 if(CPHNSW_BUILD_EVAL)
@@ -71,20 +136,46 @@ if(CPHNSW_BUILD_EVAL)
         ${CMAKE_CURRENT_SOURCE_DIR}/evaluation
     )
 
-    # SIFT-1M evaluation (requires OpenMP for ground truth computation)
-    find_package(OpenMP)
+    # SIFT-1M evaluation (OpenMP inherited from cphnsw library)
     add_executable(eval_sift
         evaluation/eval_sift.cpp
     )
+    target_link_libraries(eval_sift PRIVATE cphnsw)
     target_include_directories(eval_sift PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/include
         ${CMAKE_CURRENT_SOURCE_DIR}/evaluation
     )
-    if(OpenMP_CXX_FOUND)
-        target_link_libraries(eval_sift PRIVATE cphnsw OpenMP::OpenMP_CXX)
-    else()
-        target_link_libraries(eval_sift PRIVATE cphnsw)
-        message(WARNING "OpenMP not found - SIFT ground truth computation will be slow!")
+
+    # Tiered construction test
+    add_executable(test_tiered
+        evaluation/test_tiered.cpp
+    )
+    target_link_libraries(test_tiered PRIVATE cphnsw)
+    target_include_directories(test_tiered PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/evaluation
+    )
+
+    # Correlation test
+    add_executable(test_correlation
+        evaluation/test_correlation.cpp
+    )
+    target_link_libraries(test_correlation PRIVATE cphnsw)
+    target_include_directories(test_correlation PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/evaluation
+    )
+
+    # GPU evaluation (SIFT-1M with CUDA acceleration)
+    if(CPHNSW_USE_CUDA)
+        add_executable(eval_sift_gpu
+            evaluation/eval_sift_gpu.cpp
+        )
+        target_link_libraries(eval_sift_gpu PRIVATE cphnsw cphnsw_cuda)
+        target_include_directories(eval_sift_gpu PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/include
+            ${CMAKE_CURRENT_SOURCE_DIR}/evaluation
+        )
     endif()
 endif()
 
@@ -133,6 +224,11 @@ message(STATUS "CP-HNSW Configuration:")
 message(STATUS "  C++ Standard: ${CMAKE_CXX_STANDARD}")
 message(STATUS "  Build Type: ${CMAKE_BUILD_TYPE}")
 message(STATUS "  AVX-512: ${CPHNSW_USE_AVX512}")
+message(STATUS "  OpenMP: ${CPHNSW_USE_OPENMP}")
+message(STATUS "  CUDA: ${CPHNSW_USE_CUDA}")
+if(CPHNSW_USE_CUDA)
+    message(STATUS "  CUDA Architectures: ${CMAKE_CUDA_ARCHITECTURES}")
+endif()
 message(STATUS "  Build Tests: ${CPHNSW_BUILD_TESTS}")
 message(STATUS "  Build Benchmarks: ${CPHNSW_BUILD_BENCHMARKS}")
 message(STATUS "  Build Evaluation: ${CPHNSW_BUILD_EVAL}")

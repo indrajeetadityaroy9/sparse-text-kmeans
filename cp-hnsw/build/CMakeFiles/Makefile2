@@ -63,9 +63,13 @@ CMAKE_BINARY_DIR = /lambda/nfs/lambda-cloud-data/sparse-text-kmeans/cp-hnsw/buil
 # Directory level rules for the build root directory
 
 # The main recursive "all" target.
+all: CMakeFiles/cphnsw_cuda.dir/all
 all: CMakeFiles/eval_cphnsw.dir/all
 all: CMakeFiles/eval_comprehensive.dir/all
 all: CMakeFiles/eval_sift.dir/all
+all: CMakeFiles/test_tiered.dir/all
+all: CMakeFiles/test_correlation.dir/all
+all: CMakeFiles/eval_sift_gpu.dir/all
 .PHONY : all
 
 # The main recursive "preinstall" target.
@@ -73,10 +77,40 @@ preinstall:
 .PHONY : preinstall
 
 # The main recursive "clean" target.
+clean: CMakeFiles/cphnsw_cuda.dir/clean
 clean: CMakeFiles/eval_cphnsw.dir/clean
 clean: CMakeFiles/eval_comprehensive.dir/clean
 clean: CMakeFiles/eval_sift.dir/clean
+clean: CMakeFiles/test_tiered.dir/clean
+clean: CMakeFiles/test_correlation.dir/clean
+clean: CMakeFiles/eval_sift_gpu.dir/clean
 .PHONY : clean
+
+#=============================================================================
+# Target rules for target CMakeFiles/cphnsw_cuda.dir
+
+# All Build rule for target.
+CMakeFiles/cphnsw_cuda.dir/all:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/cphnsw_cuda.dir/build.make CMakeFiles/cphnsw_cuda.dir/depend
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/cphnsw_cuda.dir/build.make CMakeFiles/cphnsw_cuda.dir/build
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --progress-dir=/lambda/nfs/lambda-cloud-data/sparse-text-kmeans/cp-hnsw/build/CMakeFiles --progress-num=1,2 "Built target cphnsw_cuda"
+.PHONY : CMakeFiles/cphnsw_cuda.dir/all
+
+# Build rule for subdir invocation for target.
+CMakeFiles/cphnsw_cuda.dir/rule: cmake_check_build_system
+	$(CMAKE_COMMAND) -E cmake_progress_start /lambda/nfs/lambda-cloud-data/sparse-text-kmeans/cp-hnsw/build/CMakeFiles 2
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 CMakeFiles/cphnsw_cuda.dir/all
+	$(CMAKE_COMMAND) -E cmake_progress_start /lambda/nfs/lambda-cloud-data/sparse-text-kmeans/cp-hnsw/build/CMakeFiles 0
+.PHONY : CMakeFiles/cphnsw_cuda.dir/rule
+
+# Convenience name for target.
+cphnsw_cuda: CMakeFiles/cphnsw_cuda.dir/rule
+.PHONY : cphnsw_cuda
+
+# clean rule for target.
+CMakeFiles/cphnsw_cuda.dir/clean:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/cphnsw_cuda.dir/build.make CMakeFiles/cphnsw_cuda.dir/clean
+.PHONY : CMakeFiles/cphnsw_cuda.dir/clean
 
 #=============================================================================
 # Target rules for target CMakeFiles/eval_cphnsw.dir
@@ -85,7 +119,7 @@ clean: CMakeFiles/eval_sift.dir/clean
 CMakeFiles/eval_cphnsw.dir/all:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/eval_cphnsw.dir/build.make CMakeFiles/eval_cphnsw.dir/depend
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/eval_cphnsw.dir/build.make CMakeFiles/eval_cphnsw.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --progress-dir=/lambda/nfs/lambda-cloud-data/sparse-text-kmeans/cp-hnsw/build/CMakeFiles --progress-num=3,4 "Built target eval_cphnsw"
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --progress-dir=/lambda/nfs/lambda-cloud-data/sparse-text-kmeans/cp-hnsw/build/CMakeFiles --progress-num=5,6 "Built target eval_cphnsw"
 .PHONY : CMakeFiles/eval_cphnsw.dir/all
 
 # Build rule for subdir invocation for target.
@@ -111,7 +145,7 @@ CMakeFiles/eval_cphnsw.dir/clean:
 CMakeFiles/eval_comprehensive.dir/all:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/eval_comprehensive.dir/build.make CMakeFiles/eval_comprehensive.dir/depend
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/eval_comprehensive.dir/build.make CMakeFiles/eval_comprehensive.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --progress-dir=/lambda/nfs/lambda-cloud-data/sparse-text-kmeans/cp-hnsw/build/CMakeFiles --progress-num=1,2 "Built target eval_comprehensive"
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --progress-dir=/lambda/nfs/lambda-cloud-data/sparse-text-kmeans/cp-hnsw/build/CMakeFiles --progress-num=3,4 "Built target eval_comprehensive"
 .PHONY : CMakeFiles/eval_comprehensive.dir/all
 
 # Build rule for subdir invocation for target.
@@ -137,7 +171,7 @@ CMakeFiles/eval_comprehensive.dir/clean:
 CMakeFiles/eval_sift.dir/all:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/eval_sift.dir/build.make CMakeFiles/eval_sift.dir/depend
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/eval_sift.dir/build.make CMakeFiles/eval_sift.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --progress-dir=/lambda/nfs/lambda-cloud-data/sparse-text-kmeans/cp-hnsw/build/CMakeFiles --progress-num=5,6 "Built target eval_sift"
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --progress-dir=/lambda/nfs/lambda-cloud-data/sparse-text-kmeans/cp-hnsw/build/CMakeFiles --progress-num=7,8 "Built target eval_sift"
 .PHONY : CMakeFiles/eval_sift.dir/all
 
 # Build rule for subdir invocation for target.
@@ -155,6 +189,84 @@ eval_sift: CMakeFiles/eval_sift.dir/rule
 CMakeFiles/eval_sift.dir/clean:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/eval_sift.dir/build.make CMakeFiles/eval_sift.dir/clean
 .PHONY : CMakeFiles/eval_sift.dir/clean
+
+#=============================================================================
+# Target rules for target CMakeFiles/test_tiered.dir
+
+# All Build rule for target.
+CMakeFiles/test_tiered.dir/all:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_tiered.dir/build.make CMakeFiles/test_tiered.dir/depend
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_tiered.dir/build.make CMakeFiles/test_tiered.dir/build
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --progress-dir=/lambda/nfs/lambda-cloud-data/sparse-text-kmeans/cp-hnsw/build/CMakeFiles --progress-num=14,15 "Built target test_tiered"
+.PHONY : CMakeFiles/test_tiered.dir/all
+
+# Build rule for subdir invocation for target.
+CMakeFiles/test_tiered.dir/rule: cmake_check_build_system
+	$(CMAKE_COMMAND) -E cmake_progress_start /lambda/nfs/lambda-cloud-data/sparse-text-kmeans/cp-hnsw/build/CMakeFiles 2
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 CMakeFiles/test_tiered.dir/all
+	$(CMAKE_COMMAND) -E cmake_progress_start /lambda/nfs/lambda-cloud-data/sparse-text-kmeans/cp-hnsw/build/CMakeFiles 0
+.PHONY : CMakeFiles/test_tiered.dir/rule
+
+# Convenience name for target.
+test_tiered: CMakeFiles/test_tiered.dir/rule
+.PHONY : test_tiered
+
+# clean rule for target.
+CMakeFiles/test_tiered.dir/clean:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_tiered.dir/build.make CMakeFiles/test_tiered.dir/clean
+.PHONY : CMakeFiles/test_tiered.dir/clean
+
+#=============================================================================
+# Target rules for target CMakeFiles/test_correlation.dir
+
+# All Build rule for target.
+CMakeFiles/test_correlation.dir/all:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_correlation.dir/build.make CMakeFiles/test_correlation.dir/depend
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_correlation.dir/build.make CMakeFiles/test_correlation.dir/build
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --progress-dir=/lambda/nfs/lambda-cloud-data/sparse-text-kmeans/cp-hnsw/build/CMakeFiles --progress-num=12,13 "Built target test_correlation"
+.PHONY : CMakeFiles/test_correlation.dir/all
+
+# Build rule for subdir invocation for target.
+CMakeFiles/test_correlation.dir/rule: cmake_check_build_system
+	$(CMAKE_COMMAND) -E cmake_progress_start /lambda/nfs/lambda-cloud-data/sparse-text-kmeans/cp-hnsw/build/CMakeFiles 2
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 CMakeFiles/test_correlation.dir/all
+	$(CMAKE_COMMAND) -E cmake_progress_start /lambda/nfs/lambda-cloud-data/sparse-text-kmeans/cp-hnsw/build/CMakeFiles 0
+.PHONY : CMakeFiles/test_correlation.dir/rule
+
+# Convenience name for target.
+test_correlation: CMakeFiles/test_correlation.dir/rule
+.PHONY : test_correlation
+
+# clean rule for target.
+CMakeFiles/test_correlation.dir/clean:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_correlation.dir/build.make CMakeFiles/test_correlation.dir/clean
+.PHONY : CMakeFiles/test_correlation.dir/clean
+
+#=============================================================================
+# Target rules for target CMakeFiles/eval_sift_gpu.dir
+
+# All Build rule for target.
+CMakeFiles/eval_sift_gpu.dir/all: CMakeFiles/cphnsw_cuda.dir/all
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/eval_sift_gpu.dir/build.make CMakeFiles/eval_sift_gpu.dir/depend
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/eval_sift_gpu.dir/build.make CMakeFiles/eval_sift_gpu.dir/build
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --progress-dir=/lambda/nfs/lambda-cloud-data/sparse-text-kmeans/cp-hnsw/build/CMakeFiles --progress-num=9,10,11 "Built target eval_sift_gpu"
+.PHONY : CMakeFiles/eval_sift_gpu.dir/all
+
+# Build rule for subdir invocation for target.
+CMakeFiles/eval_sift_gpu.dir/rule: cmake_check_build_system
+	$(CMAKE_COMMAND) -E cmake_progress_start /lambda/nfs/lambda-cloud-data/sparse-text-kmeans/cp-hnsw/build/CMakeFiles 5
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 CMakeFiles/eval_sift_gpu.dir/all
+	$(CMAKE_COMMAND) -E cmake_progress_start /lambda/nfs/lambda-cloud-data/sparse-text-kmeans/cp-hnsw/build/CMakeFiles 0
+.PHONY : CMakeFiles/eval_sift_gpu.dir/rule
+
+# Convenience name for target.
+eval_sift_gpu: CMakeFiles/eval_sift_gpu.dir/rule
+.PHONY : eval_sift_gpu
+
+# clean rule for target.
+CMakeFiles/eval_sift_gpu.dir/clean:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/eval_sift_gpu.dir/build.make CMakeFiles/eval_sift_gpu.dir/clean
+.PHONY : CMakeFiles/eval_sift_gpu.dir/clean
 
 #=============================================================================
 # Special targets to cleanup operation of make.

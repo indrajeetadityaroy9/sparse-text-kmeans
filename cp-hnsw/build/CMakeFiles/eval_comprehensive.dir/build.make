@@ -92,6 +92,8 @@ eval_comprehensive_EXTERNAL_OBJECTS =
 
 eval_comprehensive: CMakeFiles/eval_comprehensive.dir/evaluation/eval_comprehensive.cpp.o
 eval_comprehensive: CMakeFiles/eval_comprehensive.dir/build.make
+eval_comprehensive: /usr/lib/gcc/x86_64-linux-gnu/11/libgomp.so
+eval_comprehensive: /usr/lib/x86_64-linux-gnu/libpthread.a
 eval_comprehensive: CMakeFiles/eval_comprehensive.dir/link.txt
 	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green --bold --progress-dir=/lambda/nfs/lambda-cloud-data/sparse-text-kmeans/cp-hnsw/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_2) "Linking CXX executable eval_comprehensive"
 	$(CMAKE_COMMAND) -E cmake_link_script CMakeFiles/eval_comprehensive.dir/link.txt --verbose=$(VERBOSE)

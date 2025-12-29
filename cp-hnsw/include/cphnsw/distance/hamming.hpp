@@ -4,11 +4,21 @@
 #include <cstddef>
 
 // SIMD headers
-#if defined(__AVX2__)
+#if defined(__AVX512F__) && defined(__AVX512BW__)
+#define CPHNSW_HAS_AVX512 1
+#include <immintrin.h>
+#elif defined(__AVX2__)
+#define CPHNSW_HAS_AVX512 0
 #define CPHNSW_HAS_AVX2 1
 #include <immintrin.h>
 #else
+#define CPHNSW_HAS_AVX512 0
 #define CPHNSW_HAS_AVX2 0
+#endif
+
+// Ensure CPHNSW_HAS_AVX2 is defined when AVX512 is available
+#if CPHNSW_HAS_AVX512 && !defined(CPHNSW_HAS_AVX2)
+#define CPHNSW_HAS_AVX2 1
 #endif
 
 #if defined(__SSE4_2__) || defined(__POPCNT__)
@@ -187,16 +197,183 @@ inline HammingDist hamming_avx2_u16_8(const uint16_t* a, const uint16_t* b) {
 #endif  // CPHNSW_HAS_AVX2
 
 // ============================================================================
+// AVX-512 Implementations
+// ============================================================================
+
+#if CPHNSW_HAS_AVX512
+
+/**
+ * AVX-512 Hamming distance for uint8_t components (K = 64).
+ *
+ * Uses _mm512_cmpeq_epi8_mask for direct mask comparison.
+ * Mask has 1 bit per byte match, use popcount64.
+ */
+inline HammingDist hamming_avx512_u8_64(const uint8_t* a, const uint8_t* b) {
+    __m512i va = _mm512_loadu_si512(reinterpret_cast<const __m512i*>(a));
+    __m512i vb = _mm512_loadu_si512(reinterpret_cast<const __m512i*>(b));
+
+    // Compare bytes for equality: returns 64-bit mask (1 bit per byte)
+    __mmask64 eq_mask = _mm512_cmpeq_epi8_mask(va, vb);
+
+    // Count matches using popcount
+#if CPHNSW_HAS_POPCNT
+    uint64_t matches = _mm_popcnt_u64(eq_mask);
+#else
+    uint64_t x = eq_mask;
+    x = x - ((x >> 1) & 0x5555555555555555ULL);
+    x = (x & 0x3333333333333333ULL) + ((x >> 2) & 0x3333333333333333ULL);
+    x = (x + (x >> 4)) & 0x0F0F0F0F0F0F0F0FULL;
+    uint64_t matches = (x * 0x0101010101010101ULL) >> 56;
+#endif
+
+    return static_cast<HammingDist>(64 - matches);
+}
+
+/**
+ * AVX-512 Hamming distance for uint8_t components (K = 32).
+ *
+ * Uses lower 32 bytes of 512-bit registers.
+ */
+inline HammingDist hamming_avx512_u8_32(const uint8_t* a, const uint8_t* b) {
+    // Load 32 bytes into 256-bit portion of 512-bit register
+    __m256i va = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(a));
+    __m256i vb = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(b));
+
+    // Promote to 512-bit for mask comparison
+    __m512i va512 = _mm512_castsi256_si512(va);
+    __m512i vb512 = _mm512_castsi256_si512(vb);
+
+    // Compare first 32 bytes
+    __mmask64 eq_mask = _mm512_cmpeq_epi8_mask(va512, vb512);
+
+    // Only count lower 32 bits of mask
+#if CPHNSW_HAS_POPCNT
+    uint32_t matches = _mm_popcnt_u32(static_cast<uint32_t>(eq_mask & 0xFFFFFFFF));
+#else
+    uint32_t x = static_cast<uint32_t>(eq_mask & 0xFFFFFFFF);
+    x = x - ((x >> 1) & 0x55555555);
+    x = (x & 0x33333333) + ((x >> 2) & 0x33333333);
+    x = (x + (x >> 4)) & 0x0F0F0F0F;
+    uint32_t matches = (x * 0x01010101) >> 24;
+#endif
+
+    return static_cast<HammingDist>(32 - matches);
+}
+
+/**
+ * AVX-512 Hamming distance for uint8_t components (K = 16).
+ *
+ * Uses 128-bit portion of 512-bit register.
+ */
+inline HammingDist hamming_avx512_u8_16(const uint8_t* a, const uint8_t* b) {
+    __m128i va = _mm_loadu_si128(reinterpret_cast<const __m128i*>(a));
+    __m128i vb = _mm_loadu_si128(reinterpret_cast<const __m128i*>(b));
+
+    // Promote to 512-bit for mask comparison
+    __m512i va512 = _mm512_castsi128_si512(va);
+    __m512i vb512 = _mm512_castsi128_si512(vb);
+
+    // Compare first 16 bytes
+    __mmask64 eq_mask = _mm512_cmpeq_epi8_mask(va512, vb512);
+
+    // Only count lower 16 bits of mask
+#if CPHNSW_HAS_POPCNT
+    uint32_t matches = _mm_popcnt_u32(static_cast<uint32_t>(eq_mask & 0xFFFF));
+#else
+    uint32_t x = static_cast<uint32_t>(eq_mask & 0xFFFF);
+    x = x - ((x >> 1) & 0x5555);
+    x = (x & 0x3333) + ((x >> 2) & 0x3333);
+    x = (x + (x >> 4)) & 0x0F0F;
+    uint32_t matches = (x * 0x0101) >> 8;
+#endif
+
+    return static_cast<HammingDist>(16 - matches);
+}
+
+/**
+ * AVX-512 Hamming distance for uint16_t components (K = 32).
+ */
+inline HammingDist hamming_avx512_u16_32(const uint16_t* a, const uint16_t* b) {
+    __m512i va = _mm512_loadu_si512(reinterpret_cast<const __m512i*>(a));
+    __m512i vb = _mm512_loadu_si512(reinterpret_cast<const __m512i*>(b));
+
+    // Compare 16-bit elements: returns 32-bit mask (1 bit per 16-bit element)
+    __mmask32 eq_mask = _mm512_cmpeq_epi16_mask(va, vb);
+
+#if CPHNSW_HAS_POPCNT
+    uint32_t matches = _mm_popcnt_u32(eq_mask);
+#else
+    uint32_t x = eq_mask;
+    x = x - ((x >> 1) & 0x55555555);
+    x = (x & 0x33333333) + ((x >> 2) & 0x33333333);
+    x = (x + (x >> 4)) & 0x0F0F0F0F;
+    uint32_t matches = (x * 0x01010101) >> 24;
+#endif
+
+    return static_cast<HammingDist>(32 - matches);
+}
+
+/**
+ * AVX-512 Hamming distance for uint16_t components (K = 16).
+ */
+inline HammingDist hamming_avx512_u16_16(const uint16_t* a, const uint16_t* b) {
+    __m256i va = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(a));
+    __m256i vb = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(b));
+
+    // Promote to 512-bit for mask comparison
+    __m512i va512 = _mm512_castsi256_si512(va);
+    __m512i vb512 = _mm512_castsi256_si512(vb);
+
+    // Compare first 16 16-bit elements
+    __mmask32 eq_mask = _mm512_cmpeq_epi16_mask(va512, vb512);
+
+#if CPHNSW_HAS_POPCNT
+    uint32_t matches = _mm_popcnt_u32(eq_mask & 0xFFFF);
+#else
+    uint32_t x = eq_mask & 0xFFFF;
+    x = x - ((x >> 1) & 0x5555);
+    x = (x & 0x3333) + ((x >> 2) & 0x3333);
+    x = (x + (x >> 4)) & 0x0F0F;
+    uint32_t matches = (x * 0x0101) >> 8;
+#endif
+
+    return static_cast<HammingDist>(16 - matches);
+}
+
+#endif  // CPHNSW_HAS_AVX512
+
+// ============================================================================
 // Dispatcher Templates
 // ============================================================================
 
 /**
  * Hamming distance for uint8_t codes with automatic SIMD dispatch.
+ * Prefers AVX-512 > AVX2 > scalar.
  */
 template <size_t K>
 inline HammingDist hamming_distance(const CPCode<uint8_t, K>& a,
                                      const CPCode<uint8_t, K>& b) {
-#if CPHNSW_HAS_AVX2
+#if CPHNSW_HAS_AVX512
+    if constexpr (K == 64) {
+        return hamming_avx512_u8_64(a.components.data(), b.components.data());
+    } else if constexpr (K == 32) {
+        return hamming_avx512_u8_32(a.components.data(), b.components.data());
+    } else if constexpr (K == 16) {
+        return hamming_avx512_u8_16(a.components.data(), b.components.data());
+    } else if constexpr (K <= 64) {
+        // Pad to 64 and use AVX-512
+        alignas(64) uint8_t a_padded[64] = {0};
+        alignas(64) uint8_t b_padded[64] = {0};
+        for (size_t i = 0; i < K; ++i) {
+            a_padded[i] = a.components[i];
+            b_padded[i] = b.components[i];
+        }
+        HammingDist full_dist = hamming_avx512_u8_64(a_padded, b_padded);
+        return full_dist;
+    } else {
+        return hamming_scalar_u8<K>(a, b);
+    }
+#elif CPHNSW_HAS_AVX2
     if constexpr (K == 16) {
         return hamming_avx2_u8_16(a.components.data(), b.components.data());
     } else if constexpr (K == 32) {
@@ -210,8 +387,6 @@ inline HammingDist hamming_distance(const CPCode<uint8_t, K>& a,
             b_padded[i] = b.components[i];
         }
         HammingDist full_dist = hamming_avx2_u8_32(a_padded, b_padded);
-        // Padding zeros match in both arrays, so full_dist = 32 - (actual_matches + padding_matches)
-        // = 32 - actual_matches - (32 - K) = K - actual_matches, which is correct
         return full_dist;
     } else {
         return hamming_scalar_u8<K>(a, b);
@@ -223,11 +398,30 @@ inline HammingDist hamming_distance(const CPCode<uint8_t, K>& a,
 
 /**
  * Hamming distance for uint16_t codes with automatic SIMD dispatch.
+ * Prefers AVX-512 > AVX2 > scalar.
  */
 template <size_t K>
 inline HammingDist hamming_distance(const CPCode<uint16_t, K>& a,
                                      const CPCode<uint16_t, K>& b) {
-#if CPHNSW_HAS_AVX2
+#if CPHNSW_HAS_AVX512
+    if constexpr (K == 32) {
+        return hamming_avx512_u16_32(a.components.data(), b.components.data());
+    } else if constexpr (K == 16) {
+        return hamming_avx512_u16_16(a.components.data(), b.components.data());
+    } else if constexpr (K <= 32) {
+        // Pad to 32 and use AVX-512
+        alignas(64) uint16_t a_padded[32] = {0};
+        alignas(64) uint16_t b_padded[32] = {0};
+        for (size_t i = 0; i < K; ++i) {
+            a_padded[i] = a.components[i];
+            b_padded[i] = b.components[i];
+        }
+        HammingDist full_dist = hamming_avx512_u16_32(a_padded, b_padded);
+        return full_dist;
+    } else {
+        return hamming_scalar_u16<K>(a, b);
+    }
+#elif CPHNSW_HAS_AVX2
     if constexpr (K == 8) {
         return hamming_avx2_u16_8(a.components.data(), b.components.data());
     } else if constexpr (K == 16) {

@@ -6,7 +6,106 @@
 #include <cmath>
 #include <algorithm>
 
+#ifdef CPHNSW_USE_OPENMP
+#include <omp.h>
+#endif
+
+#if CPHNSW_HAS_AVX512
+#include <immintrin.h>
+#endif
+
 namespace cphnsw {
+
+/**
+ * SIMD-accelerated argmax of absolute values.
+ *
+ * Finds index and value of max(|buffer[i]|) over the array.
+ * Uses AVX-512 when available for ~4x speedup on large arrays.
+ *
+ * @param buffer  Input array
+ * @param size    Array size
+ * @param out_idx Output: index of maximum
+ * @param out_abs Output: absolute value of maximum
+ */
+inline void find_argmax_abs(const Float* buffer, size_t size,
+                            size_t& out_idx, Float& out_abs) {
+#if CPHNSW_HAS_AVX512
+    // AVX-512: Process 16 floats at a time
+    if (size >= 16) {
+        // Sign mask for absolute value: clear MSB
+        const __m512i abs_mask = _mm512_set1_epi32(0x7FFFFFFF);
+
+        __m512 max_vals = _mm512_setzero_ps();
+
+        // First pass: find global max absolute value using SIMD reduction
+        size_t i = 0;
+        for (; i + 16 <= size; i += 16) {
+            __m512 v = _mm512_loadu_ps(&buffer[i]);
+            // Compute absolute value by clearing sign bit
+            __m512 abs_v = _mm512_castsi512_ps(
+                _mm512_and_si512(_mm512_castps_si512(v), abs_mask));
+            max_vals = _mm512_max_ps(max_vals, abs_v);
+        }
+
+        // Reduce 16 values to scalar max
+        Float global_max = _mm512_reduce_max_ps(max_vals);
+
+        // Handle remainder with scalar
+        for (; i < size; ++i) {
+            Float abs_val = std::abs(buffer[i]);
+            if (abs_val > global_max) {
+                global_max = abs_val;
+            }
+        }
+
+        // Second pass: find index of max (scalar, but array is hot in cache)
+        // Use SIMD comparison to find matching indices faster
+        const __m512 target = _mm512_set1_ps(global_max);
+        for (i = 0; i + 16 <= size; i += 16) {
+            __m512 v = _mm512_loadu_ps(&buffer[i]);
+            __m512 abs_v = _mm512_castsi512_ps(
+                _mm512_and_si512(_mm512_castps_si512(v), abs_mask));
+            __mmask16 eq_mask = _mm512_cmp_ps_mask(abs_v, target, _CMP_EQ_OQ);
+            if (eq_mask) {
+                // Found it - get first matching index
+                int first_bit = __builtin_ctz(eq_mask);
+                out_idx = i + first_bit;
+                out_abs = global_max;
+                return;
+            }
+        }
+
+        // Check remainder
+        for (; i < size; ++i) {
+            if (std::abs(buffer[i]) == global_max) {
+                out_idx = i;
+                out_abs = global_max;
+                return;
+            }
+        }
+
+        // Shouldn't reach here, but fallback
+        out_idx = 0;
+        out_abs = global_max;
+        return;
+    }
+#endif
+
+    // Scalar fallback (or for small arrays)
+    size_t max_idx = 0;
+    Float max_abs = 0.0f;
+
+    for (size_t i = 0; i < size; ++i) {
+        Float abs_val = std::abs(buffer[i]);
+        if (abs_val > max_abs) {
+            max_abs = abs_val;
+            max_idx = i;
+        }
+    }
+
+    out_idx = max_idx;
+    out_abs = max_abs;
+}
 
 /**
  * Cross-Polytope Encoder
@@ -54,27 +153,32 @@ public:
      * @return      Encoded CPCode
      */
     CPCode<ComponentT, K> encode(const Float* vec) const {
+        return encode_with_buffer(vec, buffer_.data());
+    }
+
+    /**
+     * Encode vector to Cross-Polytope code using provided buffer.
+     * Thread-safe: Uses caller-provided buffer instead of shared member.
+     *
+     * @param vec     Input vector (length >= dim_)
+     * @param buffer  Work buffer (length >= padded_dim_)
+     * @return        Encoded CPCode
+     */
+    CPCode<ComponentT, K> encode_with_buffer(const Float* vec, Float* buffer) const {
         CPCode<ComponentT, K> code;
 
         for (size_t r = 0; r < K; ++r) {
             // Apply rotation to copy
-            rotation_chain_.apply_copy(vec, buffer_.data(), r);
+            rotation_chain_.apply_copy(vec, buffer, r);
 
-            // Find argmax |buffer[i]|
-            size_t max_idx = 0;
-            Float max_abs = 0.0f;
-
-            for (size_t i = 0; i < rotation_chain_.padded_dim(); ++i) {
-                Float abs_val = std::abs(buffer_[i]);
-                if (abs_val > max_abs) {
-                    max_abs = abs_val;
-                    max_idx = i;
-                }
-            }
+            // Find argmax |buffer[i]| using SIMD-accelerated function
+            size_t max_idx;
+            Float max_abs;
+            find_argmax_abs(buffer, rotation_chain_.padded_dim(), max_idx, max_abs);
 
             // Encode: (index << 1) | sign_bit
             // sign_bit = 1 if negative, 0 if positive
-            bool is_negative = (buffer_[max_idx] < 0);
+            bool is_negative = (buffer[max_idx] < 0);
             code.components[r] = CPCode<ComponentT, K>::encode(max_idx, is_negative);
         }
 
@@ -103,17 +207,10 @@ public:
             query.rotated_vecs[r].resize(pdim);
             std::copy(buffer_.begin(), buffer_.begin() + pdim, query.rotated_vecs[r].begin());
 
-            // Find argmax |buffer[i]| for the code
-            size_t max_idx = 0;
-            Float max_abs = 0.0f;
-
-            for (size_t i = 0; i < pdim; ++i) {
-                Float abs_val = std::abs(buffer_[i]);
-                if (abs_val > max_abs) {
-                    max_abs = abs_val;
-                    max_idx = i;
-                }
-            }
+            // Find argmax |buffer[i]| using SIMD-accelerated function
+            size_t max_idx;
+            Float max_abs;
+            find_argmax_abs(buffer_.data(), pdim, max_idx, max_abs);
 
             // Store primary code component
             bool is_negative = (buffer_[max_idx] < 0);
@@ -185,15 +282,31 @@ public:
     /**
      * Batch encode multiple vectors.
      *
+     * PARALLELIZED with OpenMP when CPHNSW_USE_OPENMP is defined.
+     * Uses thread-local buffers to avoid race conditions.
+     *
      * @param vecs      Input vectors (row-major, num_vecs x dim)
      * @param num_vecs  Number of vectors
      * @param codes     Output codes (pre-allocated, size num_vecs)
      */
     void encode_batch(const Float* vecs, size_t num_vecs,
                       CPCode<ComponentT, K>* codes) const {
+#ifdef CPHNSW_USE_OPENMP
+        #pragma omp parallel
+        {
+            // Thread-local buffer to avoid race conditions
+            std::vector<Float> local_buffer(rotation_chain_.padded_dim());
+
+            #pragma omp for schedule(static)
+            for (size_t i = 0; i < num_vecs; ++i) {
+                codes[i] = encode_with_buffer(vecs + i * dim_, local_buffer.data());
+            }
+        }
+#else
         for (size_t i = 0; i < num_vecs; ++i) {
             codes[i] = encode(vecs + i * dim_);
         }
+#endif
     }
 
 private:

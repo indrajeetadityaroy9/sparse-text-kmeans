@@ -101,6 +101,12 @@ public:
 
                 if (neighbor_id == INVALID_NODE) continue;
 
+                // Prefetch next neighbor's code to hide memory latency
+                // Look ahead by 2 to overlap fetch with current computation
+                if (i + 2 < neighbor_count && neighbors[i + 2] != INVALID_NODE) {
+                    __builtin_prefetch(&graph.get_code(neighbors[i + 2]), 0, 3);
+                }
+
                 // Check if visited (atomic)
                 if (graph.check_and_mark_visited(neighbor_id, query_id)) {
                     continue;
@@ -180,6 +186,11 @@ public:
             for (size_t i = 0; i < neighbor_count; ++i) {
                 NodeId neighbor_id = neighbors[i];
                 if (neighbor_id == INVALID_NODE) continue;
+
+                // Prefetch next neighbor's code to hide memory latency
+                if (i + 2 < neighbor_count && neighbors[i + 2] != INVALID_NODE) {
+                    __builtin_prefetch(&graph.get_code(neighbors[i + 2]), 0, 3);
+                }
 
                 if (graph.check_and_mark_visited(neighbor_id, query_id)) {
                     continue;

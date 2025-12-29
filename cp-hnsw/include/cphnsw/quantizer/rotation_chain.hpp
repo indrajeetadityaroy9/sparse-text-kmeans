@@ -126,9 +126,12 @@ private:
 
     /**
      * Apply diagonal sign matrix in-place: vec[i] *= signs[i]
+     * Uses best available SIMD: AVX-512 > AVX2 > scalar
      */
     void apply_diagonal(Float* vec, const int8_t* signs) const {
-#if CPHNSW_HAS_AVX2
+#if CPHNSW_HAS_AVX512
+        apply_diagonal_avx512(vec, signs);
+#elif CPHNSW_HAS_AVX2
         apply_diagonal_avx2(vec, signs);
 #else
         apply_diagonal_scalar(vec, signs);
@@ -175,6 +178,41 @@ private:
         }
 
         // Handle remainder
+        for (; i < padded_dim_; ++i) {
+            vec[i] *= static_cast<Float>(signs[i]);
+        }
+    }
+#endif
+
+#if CPHNSW_HAS_AVX512
+    /**
+     * AVX-512 diagonal multiplication.
+     * Processes 16 floats at a time for maximum throughput.
+     */
+    void apply_diagonal_avx512(Float* vec, const int8_t* signs) const {
+        size_t i = 0;
+        for (; i + 16 <= padded_dim_; i += 16) {
+            // Load 16 floats
+            __m512 v = _mm512_loadu_ps(&vec[i]);
+
+            // Load 16 int8 signs and convert to float
+            // Use _mm_loadu_si128 to load 16 bytes, then expand to 512-bit
+            __m128i signs_i8 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(&signs[i]));
+
+            // Expand int8 to int32 (16 elements)
+            __m512i signs_i32 = _mm512_cvtepi8_epi32(signs_i8);
+
+            // Convert int32 to float
+            __m512 signs_f = _mm512_cvtepi32_ps(signs_i32);
+
+            // Multiply
+            __m512 result = _mm512_mul_ps(v, signs_f);
+
+            // Store
+            _mm512_storeu_ps(&vec[i], result);
+        }
+
+        // Handle remainder with scalar
         for (; i < padded_dim_; ++i) {
             vec[i] *= static_cast<Float>(signs[i]);
         }

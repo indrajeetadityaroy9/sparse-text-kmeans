@@ -10,6 +10,10 @@
 #include <atomic>
 #include <queue>
 
+#ifdef CPHNSW_USE_OPENMP
+#include <omp.h>
+#endif
+
 namespace cphnsw {
 
 /**
@@ -181,6 +185,9 @@ public:
     /**
      * Batch search for multiple queries.
      *
+     * PARALLELIZED with OpenMP when CPHNSW_USE_OPENMP is defined.
+     * Each query is processed independently in parallel.
+     *
      * @param queries  Query vectors (row-major, num_queries x dim)
      * @param num_queries  Number of queries
      * @param k        Number of neighbors per query
@@ -194,12 +201,18 @@ public:
             ef = std::max(k, static_cast<size_t>(10));
         }
 
-        std::vector<std::vector<SearchResult>> results;
-        results.reserve(num_queries);
+        std::vector<std::vector<SearchResult>> results(num_queries);
 
+#ifdef CPHNSW_USE_OPENMP
+        #pragma omp parallel for schedule(dynamic, 1)
         for (size_t i = 0; i < num_queries; ++i) {
-            results.push_back(search(queries + i * params_.dim, k, ef));
+            results[i] = search(queries + i * params_.dim, k, ef);
         }
+#else
+        for (size_t i = 0; i < num_queries; ++i) {
+            results[i] = search(queries + i * params_.dim, k, ef);
+        }
+#endif
 
         return results;
     }
@@ -301,8 +314,9 @@ private:
     std::vector<Float> original_vectors_;
 
     // Tiered construction: first backbone_size_ nodes use full float search
-    // Default 10,000 (about 1% of 1M dataset) - builds reliable base graph
-    size_t backbone_size_ = 10000;
+    // Default 0: Pure hybrid mode (CP search + float edges) - proven 100% connectivity
+    // Set > 0 only if you need guaranteed O(n²) backbone for specific use cases
+    size_t backbone_size_ = 0;
 
     static CPHNSWParams finalize_params(CPHNSWParams params) {
         params.finalize();

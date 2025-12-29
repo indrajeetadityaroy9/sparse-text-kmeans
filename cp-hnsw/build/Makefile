@@ -162,6 +162,19 @@ depend:
 .PHONY : depend
 
 #=============================================================================
+# Target rules for targets named cphnsw_cuda
+
+# Build rule for target.
+cphnsw_cuda: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 cphnsw_cuda
+.PHONY : cphnsw_cuda
+
+# fast build rule for target.
+cphnsw_cuda/fast:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/cphnsw_cuda.dir/build.make CMakeFiles/cphnsw_cuda.dir/build
+.PHONY : cphnsw_cuda/fast
+
+#=============================================================================
 # Target rules for targets named eval_cphnsw
 
 # Build rule for target.
@@ -199,6 +212,45 @@ eval_sift: cmake_check_build_system
 eval_sift/fast:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/eval_sift.dir/build.make CMakeFiles/eval_sift.dir/build
 .PHONY : eval_sift/fast
+
+#=============================================================================
+# Target rules for targets named test_tiered
+
+# Build rule for target.
+test_tiered: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 test_tiered
+.PHONY : test_tiered
+
+# fast build rule for target.
+test_tiered/fast:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_tiered.dir/build.make CMakeFiles/test_tiered.dir/build
+.PHONY : test_tiered/fast
+
+#=============================================================================
+# Target rules for targets named test_correlation
+
+# Build rule for target.
+test_correlation: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 test_correlation
+.PHONY : test_correlation
+
+# fast build rule for target.
+test_correlation/fast:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_correlation.dir/build.make CMakeFiles/test_correlation.dir/build
+.PHONY : test_correlation/fast
+
+#=============================================================================
+# Target rules for targets named eval_sift_gpu
+
+# Build rule for target.
+eval_sift_gpu: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 eval_sift_gpu
+.PHONY : eval_sift_gpu
+
+# fast build rule for target.
+eval_sift_gpu/fast:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/eval_sift_gpu.dir/build.make CMakeFiles/eval_sift_gpu.dir/build
+.PHONY : eval_sift_gpu/fast
 
 evaluation/eval_comprehensive.o: evaluation/eval_comprehensive.cpp.o
 .PHONY : evaluation/eval_comprehensive.o
@@ -272,6 +324,102 @@ evaluation/eval_sift.cpp.s:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/eval_sift.dir/build.make CMakeFiles/eval_sift.dir/evaluation/eval_sift.cpp.s
 .PHONY : evaluation/eval_sift.cpp.s
 
+evaluation/eval_sift_gpu.o: evaluation/eval_sift_gpu.cpp.o
+.PHONY : evaluation/eval_sift_gpu.o
+
+# target to build an object file
+evaluation/eval_sift_gpu.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/eval_sift_gpu.dir/build.make CMakeFiles/eval_sift_gpu.dir/evaluation/eval_sift_gpu.cpp.o
+.PHONY : evaluation/eval_sift_gpu.cpp.o
+
+evaluation/eval_sift_gpu.i: evaluation/eval_sift_gpu.cpp.i
+.PHONY : evaluation/eval_sift_gpu.i
+
+# target to preprocess a source file
+evaluation/eval_sift_gpu.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/eval_sift_gpu.dir/build.make CMakeFiles/eval_sift_gpu.dir/evaluation/eval_sift_gpu.cpp.i
+.PHONY : evaluation/eval_sift_gpu.cpp.i
+
+evaluation/eval_sift_gpu.s: evaluation/eval_sift_gpu.cpp.s
+.PHONY : evaluation/eval_sift_gpu.s
+
+# target to generate assembly for a file
+evaluation/eval_sift_gpu.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/eval_sift_gpu.dir/build.make CMakeFiles/eval_sift_gpu.dir/evaluation/eval_sift_gpu.cpp.s
+.PHONY : evaluation/eval_sift_gpu.cpp.s
+
+evaluation/test_correlation.o: evaluation/test_correlation.cpp.o
+.PHONY : evaluation/test_correlation.o
+
+# target to build an object file
+evaluation/test_correlation.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_correlation.dir/build.make CMakeFiles/test_correlation.dir/evaluation/test_correlation.cpp.o
+.PHONY : evaluation/test_correlation.cpp.o
+
+evaluation/test_correlation.i: evaluation/test_correlation.cpp.i
+.PHONY : evaluation/test_correlation.i
+
+# target to preprocess a source file
+evaluation/test_correlation.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_correlation.dir/build.make CMakeFiles/test_correlation.dir/evaluation/test_correlation.cpp.i
+.PHONY : evaluation/test_correlation.cpp.i
+
+evaluation/test_correlation.s: evaluation/test_correlation.cpp.s
+.PHONY : evaluation/test_correlation.s
+
+# target to generate assembly for a file
+evaluation/test_correlation.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_correlation.dir/build.make CMakeFiles/test_correlation.dir/evaluation/test_correlation.cpp.s
+.PHONY : evaluation/test_correlation.cpp.s
+
+evaluation/test_tiered.o: evaluation/test_tiered.cpp.o
+.PHONY : evaluation/test_tiered.o
+
+# target to build an object file
+evaluation/test_tiered.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_tiered.dir/build.make CMakeFiles/test_tiered.dir/evaluation/test_tiered.cpp.o
+.PHONY : evaluation/test_tiered.cpp.o
+
+evaluation/test_tiered.i: evaluation/test_tiered.cpp.i
+.PHONY : evaluation/test_tiered.i
+
+# target to preprocess a source file
+evaluation/test_tiered.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_tiered.dir/build.make CMakeFiles/test_tiered.dir/evaluation/test_tiered.cpp.i
+.PHONY : evaluation/test_tiered.cpp.i
+
+evaluation/test_tiered.s: evaluation/test_tiered.cpp.s
+.PHONY : evaluation/test_tiered.s
+
+# target to generate assembly for a file
+evaluation/test_tiered.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_tiered.dir/build.make CMakeFiles/test_tiered.dir/evaluation/test_tiered.cpp.s
+.PHONY : evaluation/test_tiered.cpp.s
+
+src/cuda/gpu_encoder.o: src/cuda/gpu_encoder.cu.o
+.PHONY : src/cuda/gpu_encoder.o
+
+# target to build an object file
+src/cuda/gpu_encoder.cu.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/cphnsw_cuda.dir/build.make CMakeFiles/cphnsw_cuda.dir/src/cuda/gpu_encoder.cu.o
+.PHONY : src/cuda/gpu_encoder.cu.o
+
+src/cuda/gpu_encoder.i: src/cuda/gpu_encoder.cu.i
+.PHONY : src/cuda/gpu_encoder.i
+
+# target to preprocess a source file
+src/cuda/gpu_encoder.cu.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/cphnsw_cuda.dir/build.make CMakeFiles/cphnsw_cuda.dir/src/cuda/gpu_encoder.cu.i
+.PHONY : src/cuda/gpu_encoder.cu.i
+
+src/cuda/gpu_encoder.s: src/cuda/gpu_encoder.cu.s
+.PHONY : src/cuda/gpu_encoder.s
+
+# target to generate assembly for a file
+src/cuda/gpu_encoder.cu.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/cphnsw_cuda.dir/build.make CMakeFiles/cphnsw_cuda.dir/src/cuda/gpu_encoder.cu.s
+.PHONY : src/cuda/gpu_encoder.cu.s
+
 # Help Target
 help:
 	@echo "The following are some of the valid targets for this Makefile:"
@@ -284,9 +432,13 @@ help:
 	@echo "... install/strip"
 	@echo "... list_install_components"
 	@echo "... rebuild_cache"
+	@echo "... cphnsw_cuda"
 	@echo "... eval_comprehensive"
 	@echo "... eval_cphnsw"
 	@echo "... eval_sift"
+	@echo "... eval_sift_gpu"
+	@echo "... test_correlation"
+	@echo "... test_tiered"
 	@echo "... evaluation/eval_comprehensive.o"
 	@echo "... evaluation/eval_comprehensive.i"
 	@echo "... evaluation/eval_comprehensive.s"
@@ -296,6 +448,18 @@ help:
 	@echo "... evaluation/eval_sift.o"
 	@echo "... evaluation/eval_sift.i"
 	@echo "... evaluation/eval_sift.s"
+	@echo "... evaluation/eval_sift_gpu.o"
+	@echo "... evaluation/eval_sift_gpu.i"
+	@echo "... evaluation/eval_sift_gpu.s"
+	@echo "... evaluation/test_correlation.o"
+	@echo "... evaluation/test_correlation.i"
+	@echo "... evaluation/test_correlation.s"
+	@echo "... evaluation/test_tiered.o"
+	@echo "... evaluation/test_tiered.i"
+	@echo "... evaluation/test_tiered.s"
+	@echo "... src/cuda/gpu_encoder.o"
+	@echo "... src/cuda/gpu_encoder.i"
+	@echo "... src/cuda/gpu_encoder.s"
 .PHONY : help
 
 

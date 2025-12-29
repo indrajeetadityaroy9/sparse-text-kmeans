@@ -12,7 +12,7 @@ namespace cphnsw {
  */
 class MinHeap {
 public:
-    void push(NodeId id, HammingDist dist) {
+    void push(NodeId id, AsymmetricDist dist) {
         heap_.push({id, dist});
     }
 
@@ -52,7 +52,7 @@ private:
  */
 class MaxHeap {
 public:
-    void push(NodeId id, HammingDist dist) {
+    void push(NodeId id, AsymmetricDist dist) {
         heap_.push({id, dist});
     }
 
@@ -85,11 +85,11 @@ public:
      * Maintains heap size <= max_size.
      *
      * @param id        Node ID
-     * @param dist      Distance
+     * @param dist      Distance (AsymmetricDist for proper gradient descent)
      * @param max_size  Maximum heap size
      * @return          true if inserted
      */
-    bool try_push(NodeId id, HammingDist dist, size_t max_size) {
+    bool try_push(NodeId id, AsymmetricDist dist, size_t max_size) {
         if (heap_.size() < max_size) {
             heap_.push({id, dist});
             return true;

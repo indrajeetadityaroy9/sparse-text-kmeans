@@ -1,0 +1,2 @@
+/usr/bin/ar qc libcphnsw_cuda.a CMakeFiles/cphnsw_cuda.dir/src/cuda/gpu_encoder.cu.o
+/usr/bin/ranlib libcphnsw_cuda.a

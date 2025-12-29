@@ -1,6 +1,10 @@
+/lambda/nfs/lambda-cloud-data/sparse-text-kmeans/cp-hnsw/build/CMakeFiles/cphnsw_cuda.dir
 /lambda/nfs/lambda-cloud-data/sparse-text-kmeans/cp-hnsw/build/CMakeFiles/eval_cphnsw.dir
 /lambda/nfs/lambda-cloud-data/sparse-text-kmeans/cp-hnsw/build/CMakeFiles/eval_comprehensive.dir
 /lambda/nfs/lambda-cloud-data/sparse-text-kmeans/cp-hnsw/build/CMakeFiles/eval_sift.dir
+/lambda/nfs/lambda-cloud-data/sparse-text-kmeans/cp-hnsw/build/CMakeFiles/test_tiered.dir
+/lambda/nfs/lambda-cloud-data/sparse-text-kmeans/cp-hnsw/build/CMakeFiles/test_correlation.dir
+/lambda/nfs/lambda-cloud-data/sparse-text-kmeans/cp-hnsw/build/CMakeFiles/eval_sift_gpu.dir
 /lambda/nfs/lambda-cloud-data/sparse-text-kmeans/cp-hnsw/build/CMakeFiles/edit_cache.dir
 /lambda/nfs/lambda-cloud-data/sparse-text-kmeans/cp-hnsw/build/CMakeFiles/rebuild_cache.dir
 /lambda/nfs/lambda-cloud-data/sparse-text-kmeans/cp-hnsw/build/CMakeFiles/list_install_components.dir
