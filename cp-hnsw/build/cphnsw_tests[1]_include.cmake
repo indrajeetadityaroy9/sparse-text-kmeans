@@ -1,5 +1,0 @@
-if(EXISTS "/Users/indrajeetadityaroy/Desktop/sparse-text-kmeans/cp-hnsw/build/cphnsw_tests[1]_tests.cmake")
-  include("/Users/indrajeetadityaroy/Desktop/sparse-text-kmeans/cp-hnsw/build/cphnsw_tests[1]_tests.cmake")
-else()
-  add_test(cphnsw_tests_NOT_BUILT cphnsw_tests_NOT_BUILT)
-endif()

@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <limits>
 #include <cmath>
+#include <vector>
 
 namespace cphnsw {
 
@@ -24,8 +25,11 @@ constexpr NodeId INVALID_NODE = std::numeric_limits<NodeId>::max();
 /// Layer level type (max 255 layers, typically < 16)
 using LayerLevel = uint8_t;
 
-/// Hamming distance type (max distance = K, typically < 64)
+/// Hamming distance type (discrete, max distance = K, typically < 64)
 using HammingDist = uint16_t;
+
+/// Asymmetric distance type (continuous, for search gradient)
+using AsymmetricDist = float;
 
 /// Float type for vectors
 using Float = float;
@@ -71,17 +75,25 @@ using CPCode16 = CPCode<uint16_t, 16>;  // For d > 128 (GIST-1M)
 using CPCode32 = CPCode<uint8_t, 32>;   // Higher precision variant
 
 /**
- * CPQuery: Query-time structure with multiprobe data.
+ * CPQuery: Query-time structure for asymmetric distance computation.
  * NOT stored in the index - only used during search.
  *
- * Contains the primary code plus auxiliary data needed for
- * generating the multiprobe sequence (magnitudes and sorted indices).
+ * CRITICAL: Stores full rotated vectors for dot product reconstruction.
+ * The Cross-Polytope code tells us which axis a node lies on; we use
+ * the query's value at that axis to estimate the dot product.
+ *
+ * Memory: K * padded_dim * sizeof(float) per query
+ * For K=32, dim=128: 32 * 128 * 4 = 16KB per query (acceptable)
  */
 template <typename ComponentT, size_t K>
 struct CPQuery {
     CPCode<ComponentT, K> primary_code;
 
-    /// Magnitude of winning coordinate for each rotation (for probability ranking)
+    /// Full rotated vectors for dot product reconstruction
+    /// rotated_vecs[r][i] = value at index i after rotation r
+    std::array<std::vector<Float>, K> rotated_vecs;
+
+    /// Magnitude of winning coordinate for each rotation (for multiprobe ranking)
     std::array<Float, K> magnitudes;
 
     /// Original argmax indices before encoding (for multiprobe flips)
@@ -94,10 +106,11 @@ struct CPQuery {
 
 /**
  * SearchResult: A single result from k-NN search.
+ * Uses AsymmetricDist (float) for continuous gradient during search.
  */
 struct SearchResult {
     NodeId id;
-    HammingDist distance;
+    AsymmetricDist distance;  // Continuous distance for proper gradient descent
 
     bool operator<(const SearchResult& other) const {
         return distance < other.distance;

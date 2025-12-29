@@ -69,25 +69,57 @@ public:
     size_t dim() const { return params_.dim; }
 
     /**
+     * Set the backbone size for tiered construction.
+     * Default: 10,000 nodes (or 1% of expected data)
+     *
+     * @param size  Number of nodes to build with full float search
+     */
+    void set_backbone_size(size_t size) {
+        backbone_size_ = size;
+    }
+
+    /**
      * Add a single vector to the index.
+     *
+     * TIERED CONSTRUCTION:
+     * - Backbone (first N nodes): Full float search + float edge selection
+     * - Rest: CP search + float edge selection (hybrid)
+     *
+     * This guarantees 100% connectivity by building a reliable backbone
+     * that all subsequent nodes can connect to.
      *
      * @param vec  Input vector (length >= dim)
      * @return     Node ID assigned
      */
     NodeId add(const Float* vec) {
-        // Encode to CP code
-        auto code = encoder_.encode(vec);
+        // Store original vector for hybrid/float construction
+        original_vectors_.insert(original_vectors_.end(), vec, vec + params_.dim);
+
+        // Encode to CPQuery (with magnitudes for asymmetric distance)
+        auto query = encoder_.encode_query(vec);
 
         // Generate level
         LayerLevel level = Insert<ComponentT, K>::generate_level(
             rng_, params_.m_L);
 
-        // Add node to graph
-        NodeId id = graph_.add_node(code, level);
+        // Add node to graph (store only the code, not magnitudes)
+        NodeId id = graph_.add_node(query.primary_code, level);
 
-        // Insert into HNSW structure
-        uint64_t qid = query_counter_.fetch_add(1);
-        Insert<ComponentT, K>::insert(id, graph_, params_, rng_, qid);
+        // TIERED CONSTRUCTION:
+        // - Backbone: Use full float search (O(n) per insert, but n is small)
+        // - Rest: Use CP search + float edge selection (hybrid)
+        if (id < backbone_size_) {
+            // Backbone: guaranteed connectivity via brute-force float search
+            Insert<ComponentT, K>::insert_float(
+                id, vec, original_vectors_, params_.dim,
+                graph_, params_);
+        } else {
+            // Rest: fast CP search with accurate float edge selection
+            uint64_t qid = query_counter_.fetch_add(1);
+            Insert<ComponentT, K>::insert_hybrid(
+                id, query, vec, original_vectors_, params_.dim,
+                graph_, params_, rng_, qid);
+        }
 
         return id;
     }
@@ -107,6 +139,8 @@ public:
     /**
      * Search for k nearest neighbors.
      *
+     * Uses asymmetric distance for proper gradient-based navigation.
+     *
      * @param query  Query vector (length >= dim)
      * @param k      Number of neighbors to return
      * @param ef     Search width (ef >= k recommended, 0 = auto)
@@ -117,10 +151,11 @@ public:
             ef = std::max(k, static_cast<size_t>(10));
         }
 
-        auto code = encoder_.encode(query);
+        // Encode as CPQuery with magnitudes for asymmetric distance
+        auto q = encoder_.encode_query(query);
         uint64_t qid = query_counter_.fetch_add(1);
 
-        return KNNSearch<ComponentT, K>::search(code, k, ef, graph_, qid);
+        return KNNSearch<ComponentT, K>::search(q, k, ef, graph_, qid);
     }
 
     /**
@@ -135,11 +170,12 @@ public:
     std::vector<SearchResult> search_multiprobe(
         const Float* query, size_t k, size_t ef, size_t num_probes) const {
 
+        auto q = encoder_.encode_query(query);
         auto encoded = encoder_.encode_with_sorted_indices(query);
         uint64_t qid = query_counter_.fetch_add(1);
 
         return KNNSearch<ComponentT, K>::search_multiprobe(
-            encoded, k, ef, num_probes, graph_, qid);
+            encoded, q, k, ef, num_probes, graph_, qid);
     }
 
     /**
@@ -166,6 +202,39 @@ public:
         }
 
         return results;
+    }
+
+    /**
+     * Brute force search for diagnostic purposes.
+     *
+     * Scans all vectors and returns top-k by asymmetric distance.
+     * Used to verify hash quality independently of graph navigation.
+     *
+     * @param query  Query vector
+     * @param k      Number of neighbors
+     * @return       k nearest neighbors by asymmetric distance
+     */
+    std::vector<SearchResult> brute_force_search(const Float* query, size_t k) const {
+        auto q = encoder_.encode_query(query);
+
+        std::vector<SearchResult> all_results;
+        all_results.reserve(graph_.size());
+
+        for (size_t i = 0; i < graph_.size(); ++i) {
+            const auto& code = graph_.get_code(static_cast<NodeId>(i));
+            AsymmetricDist dist = estimate_dot_product(q, code);
+            all_results.push_back({static_cast<NodeId>(i), dist});
+        }
+
+        std::partial_sort(all_results.begin(),
+                          all_results.begin() + std::min(k, all_results.size()),
+                          all_results.end());
+
+        if (all_results.size() > k) {
+            all_results.resize(k);
+        }
+
+        return all_results;
     }
 
     /**
@@ -226,6 +295,14 @@ private:
     mutable Graph graph_;
     std::mt19937_64 rng_;
     mutable std::atomic<uint64_t> query_counter_;
+
+    // Store original vectors for hybrid/float construction
+    // Uses true cosine distance for edge selection
+    std::vector<Float> original_vectors_;
+
+    // Tiered construction: first backbone_size_ nodes use full float search
+    // Default 10,000 (about 1% of 1M dataset) - builds reliable base graph
+    size_t backbone_size_ = 10000;
 
     static CPHNSWParams finalize_params(CPHNSWParams params) {
         params.finalize();

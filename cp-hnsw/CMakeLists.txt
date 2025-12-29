@@ -60,6 +60,32 @@ if(CPHNSW_BUILD_EVAL)
         ${CMAKE_CURRENT_SOURCE_DIR}/include
         ${CMAKE_CURRENT_SOURCE_DIR}/evaluation
     )
+
+    # Comprehensive evaluation
+    add_executable(eval_comprehensive
+        evaluation/eval_comprehensive.cpp
+    )
+    target_link_libraries(eval_comprehensive PRIVATE cphnsw)
+    target_include_directories(eval_comprehensive PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/evaluation
+    )
+
+    # SIFT-1M evaluation (requires OpenMP for ground truth computation)
+    find_package(OpenMP)
+    add_executable(eval_sift
+        evaluation/eval_sift.cpp
+    )
+    target_include_directories(eval_sift PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/evaluation
+    )
+    if(OpenMP_CXX_FOUND)
+        target_link_libraries(eval_sift PRIVATE cphnsw OpenMP::OpenMP_CXX)
+    else()
+        target_link_libraries(eval_sift PRIVATE cphnsw)
+        message(WARNING "OpenMP not found - SIFT ground truth computation will be slow!")
+    endif()
 endif()
 
 # Unit tests

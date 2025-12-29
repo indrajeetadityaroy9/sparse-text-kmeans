@@ -13,6 +13,13 @@ namespace cphnsw {
  *
  * Performs greedy search within a single layer of the HNSW graph.
  *
+ * CRITICAL: Uses reconstructed dot product estimation instead of
+ * discrete Hamming distance. The Cross-Polytope code tells us which
+ * axis a node lies on, and we use the query's actual value at that
+ * axis to estimate similarity.
+ *
+ * Distance = -DotProduct (negative because HNSW minimizes)
+ *
  * Maintains two sets:
  * - C (MinHeap): Candidates to explore, ordered by distance ascending
  * - W (MaxHeap): Found neighbors, bounded to size ef
@@ -26,11 +33,15 @@ class SearchLayer {
 public:
     using Graph = FlatHNSWGraph<ComponentT, K>;
     using Code = CPCode<ComponentT, K>;
+    using Query = CPQuery<ComponentT, K>;
 
     /**
-     * Search a single layer for nearest neighbors.
+     * Search a single layer using reconstructed dot product.
      *
-     * @param query_code    Encoded query
+     * Uses the query's rotated vectors and node codes to estimate
+     * dot product, enabling accurate similarity-based navigation.
+     *
+     * @param query         Encoded query with rotated vectors
      * @param entry_points  Starting nodes for search
      * @param ef            Search width (candidates to explore)
      * @param layer         Layer level to search
@@ -39,7 +50,7 @@ public:
      * @return              Up to ef nearest neighbors found
      */
     static std::vector<SearchResult> search(
-        const Code& query_code,
+        const Query& query,
         const std::vector<NodeId>& entry_points,
         size_t ef,
         LayerLevel layer,
@@ -60,19 +71,20 @@ public:
             }
 
             const auto& ep_code = graph.get_code(ep);
-            HammingDist dist = hamming_distance(query_code, ep_code);
+            // Use reconstructed dot product (returns -score for min-heap)
+            AsymmetricDist dist = estimate_dot_product(query, ep_code);
 
             C.push(ep, dist);
             W.push(ep, dist);
         }
 
-        // Greedy search
+        // Greedy search with dot product gradient
         while (!C.empty()) {
-            // Get closest candidate
+            // Get closest candidate (highest dot product)
             SearchResult c = C.top();
             C.pop();
 
-            // Get furthest in W (worst current neighbor)
+            // Get furthest in W (lowest dot product among found)
             if (W.empty()) break;
             SearchResult f = W.top();
 
@@ -94,9 +106,9 @@ public:
                     continue;
                 }
 
-                // Compute distance
+                // Estimate dot product with node
                 const auto& neighbor_code = graph.get_code(neighbor_id);
-                HammingDist dist = hamming_distance(query_code, neighbor_code);
+                AsymmetricDist dist = estimate_dot_product(query, neighbor_code);
 
                 // Add to candidates if promising
                 f = W.top();
@@ -107,7 +119,7 @@ public:
             }
         }
 
-        // Extract results sorted by distance
+        // Extract results sorted by distance (lowest = highest similarity)
         return W.extract_sorted();
     }
 
@@ -115,14 +127,76 @@ public:
      * Search with single entry point (convenience wrapper).
      */
     static std::vector<SearchResult> search(
-        const Code& query_code,
+        const Query& query,
         NodeId entry_point,
         size_t ef,
         LayerLevel layer,
         const Graph& graph,
         uint64_t query_id) {
 
-        return search(query_code, std::vector<NodeId>{entry_point}, ef, layer, graph, query_id);
+        return search(query, std::vector<NodeId>{entry_point}, ef, layer, graph, query_id);
+    }
+
+    /**
+     * Legacy search using discrete Hamming distance.
+     * DEPRECATED: Use asymmetric distance variant for better recall.
+     */
+    static std::vector<SearchResult> search_hamming(
+        const Code& query_code,
+        const std::vector<NodeId>& entry_points,
+        size_t ef,
+        LayerLevel layer,
+        const Graph& graph,
+        uint64_t query_id) {
+
+        MaxHeap W;
+        MinHeap C;
+
+        for (NodeId ep : entry_points) {
+            if (graph.check_and_mark_visited(ep, query_id)) {
+                continue;
+            }
+
+            const auto& ep_code = graph.get_code(ep);
+            HammingDist dist = hamming_distance(query_code, ep_code);
+
+            C.push(ep, static_cast<AsymmetricDist>(dist));
+            W.push(ep, static_cast<AsymmetricDist>(dist));
+        }
+
+        while (!C.empty()) {
+            SearchResult c = C.top();
+            C.pop();
+
+            if (W.empty()) break;
+            SearchResult f = W.top();
+
+            if (c.distance > f.distance) {
+                break;
+            }
+
+            auto [neighbors, neighbor_count] = graph.get_neighbors(c.id, layer);
+
+            for (size_t i = 0; i < neighbor_count; ++i) {
+                NodeId neighbor_id = neighbors[i];
+                if (neighbor_id == INVALID_NODE) continue;
+
+                if (graph.check_and_mark_visited(neighbor_id, query_id)) {
+                    continue;
+                }
+
+                const auto& neighbor_code = graph.get_code(neighbor_id);
+                HammingDist dist = hamming_distance(query_code, neighbor_code);
+
+                f = W.top();
+                if (static_cast<AsymmetricDist>(dist) < f.distance || W.size() < ef) {
+                    C.push(neighbor_id, static_cast<AsymmetricDist>(dist));
+                    W.try_push(neighbor_id, static_cast<AsymmetricDist>(dist), ef);
+                }
+            }
+        }
+
+        return W.extract_sorted();
     }
 };
 

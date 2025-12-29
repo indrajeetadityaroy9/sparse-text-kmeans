@@ -82,26 +82,32 @@ public:
     }
 
     /**
-     * Encode vector with additional probe data for multiprobe search.
+     * Encode vector as CPQuery with full rotated vectors for dot product estimation.
      *
-     * Returns the primary code plus magnitudes and indices needed
-     * to generate alternative probe sequences.
+     * This is the PRIMARY encoding method for search queries.
+     * Stores the full rotated vectors to enable accurate dot product reconstruction:
+     *   Score = sum_r( sign_r * rotated_vec[r][index_r] )
      *
      * @param vec   Input vector (length >= dim_)
-     * @return      CPQuery with code and multiprobe data
+     * @return      CPQuery with code and rotated vectors
      */
-    CPQuery<ComponentT, K> encode_with_probe_data(const Float* vec) const {
+    CPQuery<ComponentT, K> encode_query(const Float* vec) const {
         CPQuery<ComponentT, K> query;
+        size_t pdim = rotation_chain_.padded_dim();
 
         for (size_t r = 0; r < K; ++r) {
             // Apply rotation
             rotation_chain_.apply_copy(vec, buffer_.data(), r);
 
-            // Find argmax |buffer[i]| and store magnitude
+            // Store the FULL rotated vector for dot product reconstruction
+            query.rotated_vecs[r].resize(pdim);
+            std::copy(buffer_.begin(), buffer_.begin() + pdim, query.rotated_vecs[r].begin());
+
+            // Find argmax |buffer[i]| for the code
             size_t max_idx = 0;
             Float max_abs = 0.0f;
 
-            for (size_t i = 0; i < rotation_chain_.padded_dim(); ++i) {
+            for (size_t i = 0; i < pdim; ++i) {
                 Float abs_val = std::abs(buffer_[i]);
                 if (abs_val > max_abs) {
                     max_abs = abs_val;
@@ -114,12 +120,23 @@ public:
             query.primary_code.components[r] =
                 CPCode<ComponentT, K>::encode(max_idx, is_negative);
 
-            // Store magnitude for probability ranking
+            // Store magnitude for multiprobe ranking
             query.magnitudes[r] = max_abs;
             query.original_indices[r] = static_cast<uint32_t>(max_idx);
         }
 
         return query;
+    }
+
+    /**
+     * Encode vector with additional probe data for multiprobe search.
+     * Alias for encode_query (backwards compatibility).
+     *
+     * @param vec   Input vector (length >= dim_)
+     * @return      CPQuery with code and multiprobe data
+     */
+    CPQuery<ComponentT, K> encode_with_probe_data(const Float* vec) const {
+        return encode_query(vec);
     }
 
     /**

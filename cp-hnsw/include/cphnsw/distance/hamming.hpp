@@ -240,4 +240,213 @@ inline HammingDist hamming_distance(const CPCode<uint16_t, K>& a,
 #endif
 }
 
+// ============================================================================
+// Asymmetric Distance (Soft Hamming)
+// ============================================================================
+
+/**
+ * Asymmetric Distance: Weighted mismatch using query magnitudes.
+ *
+ * The key insight: Standard Hamming distance has only K+1 discrete values,
+ * creating "flat plateaus" where HNSW's greedy descent cannot navigate.
+ *
+ * Asymmetric distance restores the gradient by weighting each mismatch
+ * by the query's confidence (magnitude) in that component:
+ *   - Match: cost 0
+ *   - Mismatch: cost = query.magnitudes[i]
+ *
+ * This creates a continuous distance function where:
+ *   - Mismatching on a "strong" feature (high magnitude) is heavily penalized
+ *   - Mismatching on a "weak" feature (low magnitude, likely noise) is lightly penalized
+ *
+ * Storage: Unchanged (index still stores compact codes)
+ * Query: Uses CPQuery with pre-computed magnitudes
+ * Result: Float distance with fine-grained gradient for navigation
+ */
+template <typename ComponentT, size_t K>
+inline AsymmetricDist asymmetric_distance(
+    const CPQuery<ComponentT, K>& query,
+    const CPCode<ComponentT, K>& node_code) {
+
+    AsymmetricDist dist = 0.0f;
+
+    for (size_t i = 0; i < K; ++i) {
+        // If codes don't match, add magnitude penalty
+        if (query.primary_code.components[i] != node_code.components[i]) {
+            dist += query.magnitudes[i];
+        }
+    }
+
+    return dist;
+}
+
+/**
+ * SIMD-optimized asymmetric distance for K=16, uint8_t components.
+ * Falls back to scalar for other configurations.
+ */
+#if CPHNSW_HAS_AVX2
+template <>
+inline AsymmetricDist asymmetric_distance<uint8_t, 16>(
+    const CPQuery<uint8_t, 16>& query,
+    const CPCode<uint8_t, 16>& node_code) {
+
+    // Load codes (16 bytes each)
+    __m128i q_codes = _mm_loadu_si128(
+        reinterpret_cast<const __m128i*>(query.primary_code.components.data()));
+    __m128i n_codes = _mm_loadu_si128(
+        reinterpret_cast<const __m128i*>(node_code.components.data()));
+
+    // Compare for equality: 0xFF if equal, 0x00 if not
+    __m128i eq = _mm_cmpeq_epi8(q_codes, n_codes);
+
+    // Get mismatch mask: bit set where NOT equal
+    uint32_t mismatch_mask = static_cast<uint32_t>(~_mm_movemask_epi8(eq)) & 0xFFFF;
+
+    // Accumulate magnitudes for mismatched positions
+    AsymmetricDist dist = 0.0f;
+    while (mismatch_mask) {
+        int idx = __builtin_ctz(mismatch_mask);  // Find lowest set bit
+        dist += query.magnitudes[idx];
+        mismatch_mask &= (mismatch_mask - 1);    // Clear lowest set bit
+    }
+
+    return dist;
+}
+#endif
+
+/**
+ * SIMD-optimized asymmetric distance for K=32, uint8_t components.
+ */
+#if CPHNSW_HAS_AVX2
+template <>
+inline AsymmetricDist asymmetric_distance<uint8_t, 32>(
+    const CPQuery<uint8_t, 32>& query,
+    const CPCode<uint8_t, 32>& node_code) {
+
+    // Load codes (32 bytes each)
+    __m256i q_codes = _mm256_loadu_si256(
+        reinterpret_cast<const __m256i*>(query.primary_code.components.data()));
+    __m256i n_codes = _mm256_loadu_si256(
+        reinterpret_cast<const __m256i*>(node_code.components.data()));
+
+    // Compare for equality
+    __m256i eq = _mm256_cmpeq_epi8(q_codes, n_codes);
+
+    // Get mismatch mask
+    uint32_t mismatch_mask = ~static_cast<uint32_t>(_mm256_movemask_epi8(eq));
+
+    // Accumulate magnitudes for mismatched positions
+    AsymmetricDist dist = 0.0f;
+    while (mismatch_mask) {
+        int idx = __builtin_ctz(mismatch_mask);
+        dist += query.magnitudes[idx];
+        mismatch_mask &= (mismatch_mask - 1);
+    }
+
+    return dist;
+}
+#endif
+
+// ============================================================================
+// Reconstructed Dot Product (Asymmetric Distance V2)
+// ============================================================================
+
+/**
+ * Estimate dot product using Cross-Polytope codes.
+ *
+ * THE KEY INSIGHT: The node's code tells us which axis it lies closest to
+ * in the rotated space. We use the query's actual value at that axis
+ * to estimate the dot product.
+ *
+ * For each rotation r:
+ *   - Node code encodes (index_r, sign_r) meaning "I'm closest to sign_r * e_{index_r}"
+ *   - Query has full rotated vector y_r
+ *   - Contribution to dot product: sign_r * y_r[index_r]
+ *
+ * Score = sum_r( sign_r * query.rotated_vecs[r][index_r] )
+ *
+ * This is an UNBIASED ESTIMATOR of the cosine similarity!
+ * Higher score = more similar vectors.
+ *
+ * For HNSW (which minimizes distance), use negative score.
+ */
+template <typename ComponentT, size_t K>
+inline AsymmetricDist estimate_dot_product(
+    const CPQuery<ComponentT, K>& query,
+    const CPCode<ComponentT, K>& node_code) {
+
+    float score = 0.0f;
+
+    for (size_t r = 0; r < K; ++r) {
+        // Decode the code component
+        ComponentT raw = node_code.components[r];
+        size_t idx = CPCode<ComponentT, K>::decode_index(raw);
+        bool is_negative = CPCode<ComponentT, K>::decode_sign_negative(raw);
+
+        // Look up query's value at this index
+        float val = query.rotated_vecs[r][idx];
+
+        // Apply sign and accumulate
+        if (is_negative) {
+            score -= val;
+        } else {
+            score += val;
+        }
+    }
+
+    // Return NEGATIVE score for HNSW (which minimizes distance)
+    // Higher dot product = lower distance
+    return -score;
+}
+
+/**
+ * SIMD-optimized dot product estimation for K=16, uint8_t.
+ */
+#if CPHNSW_HAS_AVX2
+template <>
+inline AsymmetricDist estimate_dot_product<uint8_t, 16>(
+    const CPQuery<uint8_t, 16>& query,
+    const CPCode<uint8_t, 16>& node_code) {
+
+    float score = 0.0f;
+
+    // Process all 16 rotations
+    for (size_t r = 0; r < 16; ++r) {
+        uint8_t raw = node_code.components[r];
+        size_t idx = raw >> 1;           // Upper 7 bits = index
+        bool is_negative = raw & 1;      // LSB = sign
+
+        float val = query.rotated_vecs[r][idx];
+        score += is_negative ? -val : val;
+    }
+
+    return -score;
+}
+#endif
+
+/**
+ * SIMD-optimized dot product estimation for K=32, uint8_t.
+ */
+#if CPHNSW_HAS_AVX2
+template <>
+inline AsymmetricDist estimate_dot_product<uint8_t, 32>(
+    const CPQuery<uint8_t, 32>& query,
+    const CPCode<uint8_t, 32>& node_code) {
+
+    float score = 0.0f;
+
+    // Process all 32 rotations
+    for (size_t r = 0; r < 32; ++r) {
+        uint8_t raw = node_code.components[r];
+        size_t idx = raw >> 1;
+        bool is_negative = raw & 1;
+
+        float val = query.rotated_vecs[r][idx];
+        score += is_negative ? -val : val;
+    }
+
+    return -score;
+}
+#endif
+
 }  // namespace cphnsw

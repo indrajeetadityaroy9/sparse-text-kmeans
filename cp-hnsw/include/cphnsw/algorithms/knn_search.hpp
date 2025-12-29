@@ -18,7 +18,8 @@ namespace cphnsw {
  * 2. Search layer 0 with full ef
  * 3. Return top-k results
  *
- * Also includes multiprobe variant for improved recall.
+ * CRITICAL: Uses asymmetric distance (weighted by query magnitudes)
+ * to enable proper gradient descent in quantized space.
  *
  * Complexity: O(log N + ef * M * K)
  */
@@ -27,12 +28,15 @@ class KNNSearch {
 public:
     using Graph = FlatHNSWGraph<ComponentT, K>;
     using Code = CPCode<ComponentT, K>;
+    using Query = CPQuery<ComponentT, K>;
     using Encoder = CPEncoder<ComponentT, K>;
 
     /**
-     * Standard K-NN search.
+     * K-NN search using asymmetric distance (recommended).
      *
-     * @param query_code  Encoded query
+     * Uses query magnitudes for continuous gradient navigation.
+     *
+     * @param query       Encoded query with magnitudes
      * @param k           Number of neighbors to return
      * @param ef          Search width (ef >= k recommended)
      * @param graph       HNSW graph
@@ -40,7 +44,7 @@ public:
      * @return            k nearest neighbors sorted by distance
      */
     static std::vector<SearchResult> search(
-        const Code& query_code,
+        const Query& query,
         size_t k,
         size_t ef,
         const Graph& graph,
@@ -57,7 +61,7 @@ public:
         // Phase 1: Descend from top layer to layer 1 with ef=1
         for (int l = static_cast<int>(top_layer); l > 0; --l) {
             auto results = SearchLayer<ComponentT, K>::search(
-                query_code, entry_points, 1, static_cast<LayerLevel>(l),
+                query, entry_points, 1, static_cast<LayerLevel>(l),
                 graph, ++query_id);
 
             if (!results.empty()) {
@@ -67,7 +71,7 @@ public:
 
         // Phase 2: Search layer 0 with full ef
         auto results = SearchLayer<ComponentT, K>::search(
-            query_code, entry_points, std::max(ef, k), 0, graph, ++query_id);
+            query, entry_points, std::max(ef, k), 0, graph, ++query_id);
 
         // Return top-k
         if (results.size() > k) {
@@ -81,8 +85,10 @@ public:
      * Multiprobe K-NN search for improved recall.
      *
      * Generates multiple probe codes and unions results.
+     * Uses asymmetric distance for consistent ranking.
      *
      * @param encoded      Query with sorted indices for multiprobe
+     * @param query        Query with magnitudes for asymmetric distance
      * @param k            Number of neighbors to return
      * @param ef           Search width per probe
      * @param num_probes   Number of probe sequences to try
@@ -92,6 +98,7 @@ public:
      */
     static std::vector<SearchResult> search_multiprobe(
         const typename Encoder::EncodedWithSortedIndices& encoded,
+        const Query& query,
         size_t k,
         size_t ef,
         size_t num_probes,
@@ -108,12 +115,19 @@ public:
         all_results.reserve(k * num_probes);
 
         for (const auto& probe : probes) {
-            auto results = search(probe.code, k, ef, graph, query_id);
+            // Create a query struct for this probe
+            Query probe_query;
+            probe_query.primary_code = probe.code;
+            probe_query.magnitudes = query.magnitudes;  // Reuse magnitudes
+            probe_query.original_indices = query.original_indices;
+            probe_query.rotated_vecs = query.rotated_vecs;  // CRITICAL: Copy rotated vectors
+
+            auto results = search(probe_query, k, ef, graph, query_id);
 
             for (const auto& r : results) {
                 if (seen_ids.insert(r.id).second) {
-                    // Re-compute distance with primary code for fair comparison
-                    HammingDist true_dist = hamming_distance(encoded.code, graph.get_code(r.id));
+                    // Re-compute distance with primary query for fair comparison
+                    AsymmetricDist true_dist = estimate_dot_product(query, graph.get_code(r.id));
                     all_results.push_back({r.id, true_dist});
                 }
             }
@@ -133,7 +147,7 @@ public:
     /**
      * Batch K-NN search for multiple queries.
      *
-     * @param queries      Query codes
+     * @param queries      Query structs with magnitudes
      * @param k            Number of neighbors per query
      * @param ef           Search width
      * @param graph        HNSW graph
@@ -141,7 +155,7 @@ public:
      * @return             Results for each query
      */
     static std::vector<std::vector<SearchResult>> search_batch(
-        const std::vector<Code>& queries,
+        const std::vector<Query>& queries,
         size_t k,
         size_t ef,
         const Graph& graph,
