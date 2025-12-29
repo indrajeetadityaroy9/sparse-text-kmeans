@@ -1,0 +1,9 @@
+/Users/indrajeetadityaroy/Desktop/sparse-text-kmeans/cp-hnsw/build/CMakeFiles/eval_cphnsw.dir
+/Users/indrajeetadityaroy/Desktop/sparse-text-kmeans/cp-hnsw/build/CMakeFiles/cphnsw_tests.dir
+/Users/indrajeetadityaroy/Desktop/sparse-text-kmeans/cp-hnsw/build/CMakeFiles/test.dir
+/Users/indrajeetadityaroy/Desktop/sparse-text-kmeans/cp-hnsw/build/CMakeFiles/edit_cache.dir
+/Users/indrajeetadityaroy/Desktop/sparse-text-kmeans/cp-hnsw/build/CMakeFiles/rebuild_cache.dir
+/Users/indrajeetadityaroy/Desktop/sparse-text-kmeans/cp-hnsw/build/CMakeFiles/list_install_components.dir
+/Users/indrajeetadityaroy/Desktop/sparse-text-kmeans/cp-hnsw/build/CMakeFiles/install.dir
+/Users/indrajeetadityaroy/Desktop/sparse-text-kmeans/cp-hnsw/build/CMakeFiles/install/local.dir
+/Users/indrajeetadityaroy/Desktop/sparse-text-kmeans/cp-hnsw/build/CMakeFiles/install/strip.dir

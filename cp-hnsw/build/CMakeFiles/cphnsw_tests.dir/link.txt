@@ -1,0 +1,1 @@
+/usr/bin/c++ -O3 -DNDEBUG -arch arm64 -Wl,-search_paths_first -Wl,-headerpad_max_install_names -L/opt/homebrew/opt/libomp/lib CMakeFiles/cphnsw_tests.dir/tests/unit/test_hadamard.cpp.o -o cphnsw_tests  /usr/local/lib/libgtest_main.a /usr/local/lib/libgtest.a

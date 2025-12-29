@@ -1,0 +1,44 @@
+\section{Multiprobe LSH for the cross-polytope LSH}
+\label{ref:multiprobe}
+We now describe our multiprobe scheme for the cross-polytope LSH, which is a method for reducing the number of independent hash tables in an LSH data structure.
+Given a query point $q$, a ``standard'' LSH data structure considers only a \emph{single} cell in each of the $L$ hash tables (the cell is given by the hash value $h_i(q)$ for $i \in [L]$).
+In multiprobe LSH, we consider candidates from \emph{multiple} cells in each table \cite{lv2007multi}.
+The rationale is the following: points $p$ that are close to $q$ but fail to collide with $q$ under hash function $h_i$ are still likely to hash to a value that is close to $h_i(q)$.
+By probing multiple hash locations close to $h_i(q)$ in the same table, multiprobe LSH achieves a given probability of success with a smaller number of hash tables than ``standard'' LSH.
+Multiprobe LSH has been shown to perform well in practice \cite{lv2007multi, slaney2012optimal}.
+
+The main ingredient in multiprobe LSH is a probing scheme for generating and ranking possible modifications of the hash value $h_i(q)$.
+The probing scheme should be computationally efficient and ensure that more likely hash locations are probed first.
+For a single cross-polytope hash, the order of alternative hash values is straightforward: let $x$ be the (pseudo-)randomly rotated version of query point $q$.
+Recall that the ``main'' hash value is $h_i(q) = \argmax_{j \in [d]} |x_j|$.\footnote{In order to simplify notation, we consider a slightly modified version of the cross-polytope LSH that maps both the standard basis vector $+e_j$ and its opposite $-e_j$ to the same hash value.
+It is easy to extend the multiprobe scheme defined here to the ``full'' cross-polytope LSH from Section \ref{sec:crossPoly}.}
+Then it is easy to see that the second highest probability of collision is achieved for the hash value corresponding to the coordinate with the second largest absolute value, etc.
+Therefore, we consider the indices $i \in [d]$ sorted by their absolute value as our probing sequence or ``ranking'' for a single cross-polytope.
+
+The remaining question is how to combine multiple cross-polytope rankings when we have more than one hash function.
+As in the analysis of the cross-polytope LSH (see Section \ref{sec:crossPoly}, we consider two points $q = e_1$ and $p = \alpha e_1 + \beta e_2$ at distance $R$.
+Let $A^{(i)}$ be the i.i.d.\ Gaussian matrix of hash function $h_i$, and let $x^{(i)} = A^{(i)} e_1$ be the randomly rotated version of point $q$.
+Given $x^{(i)}$, we are interested in the probability of $p$ hashing to a certain combination of the individual cross-polytope rankings.
+More formally, let $r^{(i)}_{v_i}$ be the index of the $v_i$-th largest element of $|x^{(i)}|$, where $v \in [d]^k$ specifies the alternative probing location.
+Then we would like to compute
+\begin{align*}
+  \underset{A^{(1)}, \ldots, A^{(k)}}{\mathrm{Pr}}&\big[ h_i(p) = r^{(i)}_{v_i} \textnormal{ for all } i \in [k] \; | \; A^{(i)} q = x^{(i)}\big] \\
+  &= \; \prod_{i=1}^k \underset{A^{(i)}}{\mathrm{Pr}} \Big[ \argmax_{j \in [d]} \big| (\alpha \cdot A^{(i)} e_1 + \beta \cdot A^{(i)} e_2)_j \big| = r^{(i)}_{v_i} \; \Big| \; A^{(i)} e_1 = x^{(i)}\Big] \; .
+\end{align*}
+If we knew this probability for all $v \in [d]^k$, we could sort the probing locations by their probability.
+We now show how to approximate this probability efficiently for a single value of $i$ (and hence drop the superscripts to simplify notation).
+WLOG, we permute the rows of $A$ so that $r_v = v$ and get
+\[
+  \underset{A}{\mathrm{Pr}} \Big[ \argmax_{j \in [d]} \big| (\alpha x + \beta \cdot A e_2)_j \big| = v \; \Big| \; A e_1 = x \Big] \;\; = \;\; \underset{y \sim N(0, I_d)}{\mathrm{Pr}} \Big[ \argmax_{j \in [d]} \big| (x + \frac{\beta}{\alpha} \cdot y)_j \big| = v \Big] \; .
+\]
+The RHS is the Gaussian measure of the set $S = \{y \in \R^d \, | \, \argmax_{j \in [d]} \big| (x + \frac{\beta}{\alpha} y)_j \big| = v\}$.
+Similar to the analysis of the cross-polytope LSH, we approximate the measure of $S$ by its distance to the origin.
+Then the probability of probing location $v$ is proportional to $\exp(-\|y_{x,v}\|^2)$, where $y_{x,v}$ is the shortest vector $y$ such that $\argmax_{j} | x + y|_j = v$.
+Note that the factor $\beta / \alpha$ becomes a proportionality constant, and hence the probing scheme does not require to know the distance $R$.
+For computational performance and simplicity, we make a further approximation and use $y_{x,v} = (\max_i |x_i| - |x_v|) \cdot e_v$, i.e., we only consider modifying a single coordinate to reach the set $S$.
+
+Once we have estimated the probabilities for each $v_i \in [d]$, we incrementally construct the probing sequence using a binary heap, similar to the approach in \cite{lv2007multi}.
+For a probing sequence of length $m$, the resulting algorithm has running time $O(L \cdot d \log d + m \log m)$.
+In our experiments, we found that the $O(L \cdot d \log d)$ time taken to sort the probing candidates $v_i$ dominated the running time of the hash function evaluation.
+In order to circumvent this issue, we use an incremental sorting approach that only sorts the relevant parts of each cross-polytope and gives a running time of $O(L \cdot d + m \log m)$.
+

@@ -1,0 +1,109 @@
+\section{Proof of Theorem~\ref{rho_lower}}
+\label{app_lower}
+
+\begin{lemma}
+  \label{iso_lemma}
+  Let $A \subset S^{d-1}$ be a measurable subset of a sphere with $\mu(A) = \mu_0 \leq 1/2$.
+  Then, for $0 < \tau < \sqrt{2}$, one has
+  \begin{equation}
+    \label{iso_statement}
+  \underset{u, v \sim S^{d-1}}{\mathrm{Pr}}\bigl[v \in A \bigm| u \in A, \|u - v\| \leq \tau\bigr] =
+  \frac{\underset{X, Y \sim N(0, 1)}{\mathrm{Pr}}[X \geq \eta \mbox{ and } \alpha X + \beta Y \geq \eta] + o(1)}{\underset{X \sim N(0, 1)}{\mathrm{Pr}}[X \geq \eta] + o(1)},
+  \end{equation}
+  where:
+  \begin{itemize}
+  \item $\alpha = 1 - \frac{\tau^2}{2}$;
+  \item $\beta = \sqrt{\tau^2 - \frac{\tau^4}{4}}$;
+  \item $\eta \in \Rbb$ is such that $\underset{X \sim N(0, 1)}{\mathrm{Pr}}[X \geq \eta] = \mu_0$.
+  \end{itemize}
+  In particular, if $\mu_0 = \Omega(1)$, then
+  $$
+  \underset{u, v \sim S^{d-1}}{\mathrm{Pr}}\bigl[v \in A \bigm| u \in A, \|u - v\| \leq \tau\bigr]
+  = \Lambda(\tau, \Phi_c^{-1}(\mu_0)) + o(1).
+  $$
+\end{lemma}
+\begin{proof}
+  First, the left-hand side of~(\ref{iso_statement})
+  is maximized by a spherical cap of measure $\mu_0$. This follows from Theorem~5 of~\cite{FS02}.
+  So, from now on we assume that $A$ is a spherical cap.
+
+  Second, one has
+  \begin{align*}
+  & \underset{u, v \sim S^{d-1}}{\mathrm{Pr}}\bigl[v \in A \bigm| u \in A, \|u - v\| \leq \tau\bigr] \\
+  & = \underset{u, v \sim S^{d-1}}{\mathrm{Pr}}\bigl[v \in A \bigm| u \in A, \|u - v\| = \tau \pm o(1)\bigr] + o(1) \\
+    & = \frac{\underset{u \sim S^{d-1}}{\mathrm{Pr}}\bigl[u_1 \geq \widetilde{\eta} \mbox{ and }
+        (\alpha \pm o(1)) u_1 + (\beta \pm o(1)) u_2 \geq \widetilde{\eta}
+        \bigr]}{\underset{u \sim S^{d-1}}{\mathrm{Pr}}[u_1 \geq \widetilde{\eta}]} + o(1)\\
+  & = \frac{\underset{X, Y \sim N(0, 1)}{\mathrm{Pr}}[X \geq \eta \mbox{ and } \alpha X + \beta Y \geq \eta] + o(1)}{\underset{X \sim N(0, 1)}{\mathrm{Pr}}[X \geq \eta] + o(1)},
+  \end{align*}
+  where $\widetilde{\eta}$ is such that $\underset{u \sim S^{d-1}}{\mathrm{Pr}}[u_1 \geq \widetilde{\eta}] = \mu_0$
+  and:
+  \begin{itemize}
+  \item the first step is due to the concentration of measure on the sphere;
+  \item the second step is expansion of the conditional probability;
+  \item the third step is due to the fact that a $O(1)$-dimensional
+    projection of the uniform measure on a sphere of radius $\sqrt{d}$ in $\Rbb^d$
+    converges in total variation to a standard Gaussian measure~\cite{DF87}.
+  \end{itemize}
+\end{proof}
+
+\begin{lemma}
+  \label{conc_lemma}
+  For every $0 < \tau < \sqrt{2}$, the function $\mu \mapsto \Lambda(\tau, \Phi_c^{-1}(\mu))$ is concave for $0 < \mu < 1/2$.
+\end{lemma}
+\begin{proof}
+  Abusing notation, for this proof we denote $\Lambda(\eta) = \Lambda(\tau, \eta)$ and
+  $$I(\eta) = \underset{X, Y \sim N(0, 1)}{\mathrm{Pr}}[X \geq \eta \mbox{ and } \alpha X + \beta Y \geq \eta]$$
+  (that is, $\Lambda(\eta) = I(\eta) / \Phi_c(\eta)$).
+       One has $\Phi_c'(\eta) = - \frac{e^{-\eta^2 / 2}}{\sqrt{2 \pi}}$ and
+       $$
+       I'(\eta) = - \sqrt{\frac{2}{\pi}} \cdot e^{-\eta^2 / 2} \cdot \Phi_c\left(\frac{(1 - \alpha)\eta}{\beta}\right).
+       $$
+       Combining, we get
+       $$
+       \Lambda'(\eta) = \frac{e^{-\eta^2 / 2}}{\sqrt{2 \pi}} \cdot \frac{I(\eta) - 2 \Phi_c(\eta) \Phi_c\left(\frac{(1 - \alpha) \eta}{\beta}\right)}{\Phi_c(\eta)^2}
+       $$
+       and
+       $$
+       \frac{d \Lambda(\Phi_c^{-1}(\mu))}{d \mu} = \frac{2 \Phi_c(\eta^*) \Phi_c\left(\frac{(1 - \alpha) \eta^*}{\beta}\right) - I(\eta^*)}{\Phi_c(\eta^*)^2} =: \Pi(\eta^*),
+       $$
+       where $\eta^* = \eta^*(\mu) = \Phi_c^{-1}(\mu)$. It is sufficient to show that $\Pi(\eta^*)$ is non-decreasing
+       in $\eta^*$ for $\eta^* \geq 0$.
+
+       We have
+       \begin{multline*}
+       \Pi'(\eta) = \sqrt{\frac{2}{\pi}} \cdot \frac{e^{-\eta^2 / 2}}{\Phi_c(\eta)^3} \left(2 \cdot \Phi_c(\eta)
+       \Phi_c\left(\frac{(1 - \alpha)\eta}{\beta}\right) - I(\eta)
+       - \frac{1 - \alpha}{\beta} \cdot e^{\frac{\alpha(1 - \alpha)}{\beta^2} \cdot \eta^2} \Phi_c(\eta)^2\right)
+       \\=:\sqrt{\frac{2}{\pi}} \cdot \frac{e^{-\eta^2 / 2}}{\Phi_c(\eta)^3} \cdot \Omega(\eta).
+       \end{multline*}
+
+       We need to show that $\Omega(\eta) \geq 0$ for $\eta \geq 0$. We will do this by showing that
+       $\Omega'(\eta) \leq 0$ for $\eta \geq 0$ and that $\lim_{\eta \to \infty} \Omega(\eta) = 0$.
+       The latter is obvious, so let us show the former.
+       $$
+       \Omega'(\eta) = - \frac{2 \alpha(1 - \alpha)^2}{\beta^3} \cdot e^{\frac{\alpha(1 - \alpha)}{\beta^2} \eta^2} \cdot \Phi_c(\eta)^2 \cdot \eta \leq 0
+       $$
+       for $\eta \geq 0$.
+\end{proof}
+
+Now we are ready to prove Theorem~\ref{rho_lower}. Let us first assume that all the parts have measure $\Omega(1)$. Later we will show
+that this assumption can be removed. W.l.o.g. we assume that functions from the family have subsets integers as a range. We have,
+\begin{align*}
+  p_1 & \leq \underset{\substack{u, v \sim S^{d-1}\\h \sim \mathcal{H}}}{\mathrm{Pr}}\bigr[h(u) = h(v) \bigm| \|u - v\| \leq \tau \bigr] \\
+  & = \underset{h \sim \mathcal{H}}{\mathrm{E}}\left[\sum_i \mu(h^{-1}(i)) \underset{}{\mathrm{Pr}}[v \in h^{-1}(i) \mid u \in h^{-1}(i), \|u - v\| \leq \tau]\right] \\
+  & \leq \underset{h \sim \mathcal{H}}{\mathrm{E}}\left[\sum_i \mu(h^{-1}(i)) \Lambda(\tau, \Phi_c^{-1}(\mu(h^{-1}(i))))\right] + o(1) \\
+  & \leq \Lambda\left(\tau, \Phi_c^{-1}\left(\underset{h \sim \mathcal{H}}{\mathrm{E}}\left[\sum_i \mu(h^{-1}(i))^2\right]\right)\right) + o(1) \\
+  & \leq \Lambda(\tau, \Phi_c^{-1}(p^*(\mathcal{H}))) + o(1),
+\end{align*}
+where:
+\begin{itemize}
+\item the first step is by the definition of $p_1$;
+\item the third step is due to the condition $\mu(h^{-1}(i)) = \Omega(1)$ and Lemma~\ref{iso_lemma};
+\item the fourth step is due to Lemma~\ref{conc_lemma} and the assumption $\mu(h^{-1}(i)) \leq 1/2$;
+\item the final step is due to the definition of $p^*(\mathcal{H})$.
+\end{itemize}
+
+To get rid of the assumption that a measure of every part is $\Omega(1)$ observe that all parts with measure at most $\eps$ contribute to
+the expectation at most $\eps \cdot T$, since there are at most $T$ pieces in total. Note that if $\eps = o(1)$, then $\eps \cdot T = o(1)$,
+since we assume $T$ being fixed.

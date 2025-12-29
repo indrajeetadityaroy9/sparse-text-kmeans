@@ -1,0 +1,7 @@
+add_test([=[HadamardTest.SelfInverse]=]  /Users/indrajeetadityaroy/Desktop/sparse-text-kmeans/cp-hnsw/build/cphnsw_tests [==[--gtest_filter=HadamardTest.SelfInverse]==] --gtest_also_run_disabled_tests)
+set_tests_properties([=[HadamardTest.SelfInverse]=]  PROPERTIES WORKING_DIRECTORY /Users/indrajeetadityaroy/Desktop/sparse-text-kmeans/cp-hnsw/build SKIP_REGULAR_EXPRESSION [==[\[  SKIPPED \]]==])
+add_test([=[HadamardTest.CorrectnessSmall]=]  /Users/indrajeetadityaroy/Desktop/sparse-text-kmeans/cp-hnsw/build/cphnsw_tests [==[--gtest_filter=HadamardTest.CorrectnessSmall]==] --gtest_also_run_disabled_tests)
+set_tests_properties([=[HadamardTest.CorrectnessSmall]=]  PROPERTIES WORKING_DIRECTORY /Users/indrajeetadityaroy/Desktop/sparse-text-kmeans/cp-hnsw/build SKIP_REGULAR_EXPRESSION [==[\[  SKIPPED \]]==])
+add_test([=[HadamardTest.NormPreservation]=]  /Users/indrajeetadityaroy/Desktop/sparse-text-kmeans/cp-hnsw/build/cphnsw_tests [==[--gtest_filter=HadamardTest.NormPreservation]==] --gtest_also_run_disabled_tests)
+set_tests_properties([=[HadamardTest.NormPreservation]=]  PROPERTIES WORKING_DIRECTORY /Users/indrajeetadityaroy/Desktop/sparse-text-kmeans/cp-hnsw/build SKIP_REGULAR_EXPRESSION [==[\[  SKIPPED \]]==])
+set(  cphnsw_tests_TESTS HadamardTest.SelfInverse HadamardTest.CorrectnessSmall HadamardTest.NormPreservation)

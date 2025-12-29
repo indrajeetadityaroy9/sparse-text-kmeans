@@ -1,0 +1,107 @@
+\section{Proof of Theorem~\ref{rho_upper}}
+\label{app_upper}
+
+In this section we complete the proof of Theorem~\ref{rho_upper},
+following the outline from Section~\ref{sec:crossPoly}. Our starting
+point is the collision probability bound from Eqn.~\eqref{prob_exp}.
+
+For $u, v \in \Rbb$ with $u \geq 0$ and $\alpha u + \beta v \geq 0$ define,
+$$
+\sigma(u, v) = \underset{X_2, Y_2 \sim N(0, 1)}{\mathrm{Pr}}[|X_2| \leq u \mbox{ and } |\alpha X_2 + \beta Y_2| \leq \alpha u + \beta v].
+$$
+Then, the right-hand side of~(\ref{prob_exp}) is equal to
+$$
+2d \cdot \underset{X_1, Y_1 \sim N(0, 1)}{\mathrm{E}}[\sigma(X_1, Y_1)^{d-1}].
+$$
+Let us define
+$$
+\Delta(u, v) = \min\{u, \alpha u + \beta v\}.
+$$
+
+\begin{lemma}
+  \label{est1}
+  For every $0 < \eps < 1/3$,
+  $$
+  1 - e^{-\Delta(u, v)^2 / 2} \leq \sigma(u, v) \leq 1 - \Omega\left(\eps^{1/2} \cdot e^{-(1 +\eps)\Delta(u, v)^2 / 2 }\right).
+  $$
+\end{lemma}
+\begin{proof}
+  This is a combination of Lemma~\ref{measure_convex} together with the following obvious observation: the distance from the origin to the
+  set $\{(x, y) : |x| \geq u \mbox{ or } |\alpha x + \beta y| \geq \alpha u + \beta v\}$ is equal to $\Delta(u, v)$ (see Figure~\ref{gaussian_set}).
+\end{proof}
+
+\begin{lemma}
+  \label{est2}
+  For every $t \geq 0$ and $0 < \eps < 1/3$,
+  $$
+  \Omega_{\tau}\left(\eps \cdot e^{-(1 + \eps) \cdot \frac{4}{4 - \tau^2} \cdot \frac{t^2}{2}}\right) \leq \underset{X_1, Y_1 \sim N(0, 1)}{\mathrm{Pr}}[\Delta(X_1, Y_1) \geq t] \leq e^{-\frac{4}{4 - \tau^2} \cdot \frac{t^2}{2}}.
+  $$
+\end{lemma}
+\begin{proof}
+  Similar to the previous lemma, this is a consequence of Lemma~\ref{measure_wedge} together with the fact that the squared distance from the origin to the set
+  $\{(x, y) \colon x \geq t \mbox{ and } \alpha x + \beta y \geq t\}$ is equal to $\frac{4}{4 - \tau^2} \cdot t^2$.
+\end{proof}
+
+\subsection{Idealized proof}
+
+Let us expand Eqn.~\eqref{prob_exp} further, assuming that the
+``idealized'' versions of Lemma~\ref{est1} and Lemma~\ref{est2}
+hold. Namely, we assume that
+\begin{equation}
+\label{ideal_est1}
+\sigma(u, v) = 1 - e^{-\Delta(u, v)^2 / 2};
+\end{equation}
+and
+\begin{equation}
+\label{ideal_est2}
+\underset{X_1, Y_1 \sim N(0, 1)}{\mathrm{Pr}}[\Delta(X_1, Y_1) \geq t] = e^{-\frac{4}{4 - \tau^2} \cdot \frac{t^2}{2}}.
+\end{equation}
+
+In the next section we redo the computations using the precise bounds for
+$\sigma(u, v)$ and ${\mathrm{Pr}}[\Delta(X_1, Y_1) \geq t]$.
+
+Expanding Eqn.~\eqref{prob_exp}, we have
+\begin{align}
+  \underset{X_1, Y_1 \sim N(0, 1)}{\mathrm{E}}[\sigma(X_1, Y_1)^{d-1}] \nonumber & =
+  \int_0^1 \underset{X_1, Y_1 \sim N(0, 1)}{\mathrm{Pr}}[\sigma(X_1, Y_1) \geq t^{\frac{1}{d-1}}] \, dt \\
+  \nonumber & = 
+  \int_0^1 \underset{X_1, Y_1 \sim N(0, 1)}{\mathrm{Pr}}[e^{-\Delta(X_1, Y_1)^2 / 2} \leq 1 - t^{\frac{1}{d-1}}] \, dt \\
+  \nonumber & = 
+  \int_0^1 (1 - t^{\frac{1}{d - 1}})^{\frac{4}{4 - \tau^2}} \, dt \\
+  \nonumber & =
+  (d - 1) \cdot \int_0^1 (1 - u)^{\frac{4}{4 - \tau^2}} u^{d-2} \, dt \\
+  \nonumber & = (d - 1) \cdot B \left(\frac{8 - \tau^2}{4 - \tau^2}; d - 1\right) \\
+  & = \Theta_{\tau}(1) \cdot d^{- \frac{4}{4 - \tau^2}}, \label{ideal_derivation}
+\end{align}
+where:
+\begin{itemize}
+\item the first step is a standard expansion of an expectation;
+\item the second step is due to~(\ref{ideal_est1});
+\item the third step is due to~(\ref{ideal_est2});
+\item the fourth step is a change of variables;
+\item the fifth step is a definition of the Beta function;
+\item the sixth step is due to the Stirling approximation.
+\end{itemize}
+Overall, substituting~(\ref{ideal_derivation}) into~(\ref{prob_exp}), we get:
+$$
+\ln \frac{1}{\underset{h \sim \mathcal{H}}{\mathrm{Pr}}[h(p) = h(q)]} = \frac{\tau^2}{4 - \tau^2} \cdot \ln d \pm O_{\tau}(1).
+$$
+
+\subsection{The real proof}
+
+We now perform the exact calculations, using the bounds (involving
+$\eps$) from Lemma~\ref{est1} and Lemma~\ref{est2}. We set $\eps = 1 /
+d$ and obtain the following asymptotic statements:
+$$
+\sigma(u, v) = 1 - d^{\pm O(1)} \cdot e^{-(1 \pm d^{-\Omega(1)}) \cdot \Delta(u, v)^2 / 2};
+$$
+and
+$$
+\underset{X, Y \sim N(0, 1)}{\mathrm{Pr}}[\Delta(X, Y) \geq t] = d^{\pm O(1)} \cdot e^{-(1 \pm d^{-\Omega(1)}) \cdot \frac{4}{4 - \tau^2} \cdot \frac{t^2}{2}}.
+$$
+Then, we can repeat the ``idealized'' proof (see Eqn.~\eqref{ideal_derivation}) verbatim with the new estimates and obtain the final form of Theorem~\ref{rho_upper}:
+$$
+\ln \frac{1}{\underset{h \sim \mathcal{H}}{\mathrm{Pr}}[h(p) = h(q)]} = \frac{\tau^2}{4 - \tau^2} \cdot \ln d \pm O_{\tau}(\ln \ln d).
+$$
+Note the difference in the low order term between idealized and the real version. As we argue in Section~\ref{sec_lower}, the latter
+$O_{\tau}(\ln \ln d)$ is, in fact, tight.

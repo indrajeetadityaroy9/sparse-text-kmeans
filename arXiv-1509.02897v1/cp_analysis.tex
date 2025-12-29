@@ -1,0 +1,148 @@
+\section{Cross-polytope LSH}
+\label{sec:crossPoly}
+
+In this section, we describe the cross-polytope LSH, analyze it, and show how to make it practical.
+First, we recall the definition of the cross-polytope LSH \cite{terasawa2007spherical}: 
+Consider the following hash family $\mathcal{H}$ for points on a unit sphere $S^{d-1} \subset \Rbb^d$. Let $A \in \Rbb^{d \times d}$
+be a random matrix with i.i.d.\ Gaussian entries (``a random rotation'').
+To hash a point $x \in S^{d-1}$, we compute $y = Ax / \|Ax\| \in S^{d-1}$ and then find the point closest to $y$ from $\{\pm e_i\}_{1 \leq i \leq d}$, where $e_i$ is the $i$-th standard basis vector of $\Rbb^d$. We use the closest neighbor
+as a hash of $x$. 
+
+The following theorem bounds the collision probability for two points under the above family $\mathcal{H}$.
+
+\begin{theorem}
+  \label{rho_upper}
+  Suppose that $p, q \in S^{d-1}$ are such that $\|p - q\| = \tau$, where $0 < \tau < 2$.
+  Then,
+  $$
+  \ln \frac{1}{\underset{h \sim \mathcal{H}}{\mathrm{Pr}}\bigl[h(p) = h(q)\bigr]} = \frac{\tau^2}{4 - \tau^2} \cdot \ln d + O_{\tau}(\ln \ln d) \; .
+  $$
+\end{theorem}
+Before we show how to prove this theorem, we briefly describe its implications.
+Theorem \ref{rho_upper} shows that the cross-polytope LSH achieves essentially the same bounds on the collision probabilities as the (theoretically)
+optimal LSH for the sphere from~\cite{AR15} (see Section ``Spherical LSH'' there). In particular, substituting the bounds from Theorem~\ref{rho_upper} for the cross-polytope LSH into the standard reduction from Near Neighbor Search to LSH~\cite{HIM12},
+we obtain the following data structure with sub-quadratic space and sublinear query time for Near Neighbor Search on a sphere.
+
+\begin{corollary}
+  The $(c, r)$-ANN on a unit sphere $S^{d-1}$ can be solved in space $O(n^{1 + \rho} + dn)$ and query time
+  $O(d \cdot n^{\rho})$, where
+  $
+  \rho = \frac{1}{c^2} \cdot \frac{4 - c^2 r^2}{4 - r^2} + o(1) \; .
+  $
+\end{corollary}
+
+We now outline the proof of Theorem~\ref{rho_upper}. For the full proof, see Appendix~\ref{app_upper}.
+
+Due to the spherical symmetry of Gaussians,
+we can assume that
+$p = e_1$ and $q = \alpha e_1 + \beta e_2$, where $\alpha, \beta$ are such that $\alpha^2 + \beta^2 = 1$ and
+$(\alpha - 1)^2 + \beta^2 = \tau^2$.
+Then, we expand the collision probability:
+\begin{align}
+\underset{h \sim \mathcal{H}}{\mathrm{Pr}}[h(p) = h(q)] & = 2d \cdot \underset{h \sim \mathcal{H}}{\mathrm{Pr}}[h(p) = h(q) = e_1]\nonumber
+\\& = 2d \cdot \underset{u, v \sim N(0, 1)^d}{\mathrm{Pr}}[\forall i \enspace |u_i| \leq u_1 \mbox{ and }
+  |\alpha u_i + \beta v_i| \leq \alpha u_1 + \beta v_1] \nonumber\\
+& = 2d \cdot \underset{X_1, Y_1}{\mathrm{E}}\left[\underset{X_2, Y_2}{\mathrm{Pr}}\Bigl[|X_2| \leq X_1 \mbox{ and }
+    |\alpha X_2 + \beta Y_2| \leq \alpha X_1 + \beta Y_1\Bigr]^{d - 1}\right],
+\label{prob_exp}
+\end{align}
+where $X_1, Y_1, X_2, Y_2 \sim N(0, 1)$. Indeed, the first step is due to the spherical symmetry of the hash family,
+the second step follows from the above discussion about replacing a random orthogonal matrix with a Gaussian one and that one can
+assume w.l.o.g. that $p = e_1$ and $q = \alpha e_1 + \beta e_2$; the last step is due to the independence of the entries of $u$ and $v$.
+
+Thus, proving Theorem~\ref{rho_upper} reduces to estimating the right-hand side of~(\ref{prob_exp}). Note that the probability
+$\mathrm{Pr}[|X_2| \leq X_1 \mbox{ and } |\alpha X_2 + \beta Y_2| \leq \alpha X_1 + \beta Y_1]$
+is equal to the Gaussian area of the planar set $S_{X_1, Y_1}$ shown in Figure~\ref{gaussian_set}.
+The latter is \emph{heuristically} equal to $1 - e^{-\Delta^2 / 2}$, where $\Delta$ is the distance from the origin to the complement of $S_{X_1, Y_1}$, which is easy to compute (see Appendix~\ref{app_gaussian} for the precise statement of this argument). Using this estimate,
+we compute~(\ref{prob_exp}) by taking the outer expectation.
+
+\subsection{Making the cross-polytope LSH practical}
+\label{sec:cppractical}
+As described above, the cross-polytope LSH is not quite practical. The main bottleneck is sampling, storing, and applying a random rotation.
+In particular, to multiply a random Gaussian matrix with a vector, we need time proportional to $d^2$, which is
+infeasible for large $d$.
+
+\paragraph{Pseudo-random rotations.} To rectify this issue, we instead use \emph{pseudo-random rotations}. Instead of multiplying
+an input vector $x$ by a random Gaussian matrix, we apply the following linear transformation:
+$x \mapsto H D_3 H D_2 H D_1 x$,
+where $H$ is the Hadamard transform, and $D_i$ for $i \in \{1, 2, 3\}$ is a random diagonal $\pm 1$-matrix. Clearly, this is an orthogonal
+transformation, which one can store in space $O(d)$ and evaluate in time $O(d \log d)$ using the Fast Hadamard Transform. This is similar to
+pseudo-random rotations used in the context of LSH~\cite{DKS11}, dimensionality reduction~\cite{AC09}, or compressed sensing~\cite{AR14}. While we
+are currently
+not aware
+how to prove rigorously that such pseudo-random rotations
+perform as
+well as the fully random ones, empirical evaluations show that
+three
+applications of $H D_i$ 
+are exactly equivalent to applying a true random rotation (when $d$ tends to infinity). We note
+that only {\em two} applications of $H D_i$ are not sufficient.
+
+\paragraph{Feature hashing.} While we can apply a pseudo-random rotation in time $O(d \log d)$,
+even this can be too slow. E.g., consider an input
+vector $x$ that is \emph{sparse}: the number of non-zero entries of
+$x$ is $s$ much smaller than $d$. In this case, we can evaluate the hyperplane LSH
+from~\cite{Cha02} in time $O(s)$, while computing the cross-polytope
+LSH (even with pseudo-random rotations) still takes time
+$O(d \log d)$. To speed-up the cross-polytope LSH for sparse vectors, we apply feature hashing~\cite{WDLSA09}: before performing a pseudo-random rotation, we reduce the dimension from
+$d$ to $d' \ll d$ by applying a linear map $x \mapsto Sx$, where $S$ is a random sparse $d' \times d$ matrix, whose columns have \emph{one} non-zero $\pm 1$ entry sampled uniformly. This way, the evaluation time becomes $O(s + d' \log d')$. \footnote{Note that one can apply Lemma~2 from the arXiv version of~\cite{WDLSA09}
+to claim that---after such a dimension reduction---the distance between \emph{any} two points remains sufficiently concentrated for the bounds
+from Theorem~\ref{rho_upper} to still hold (with $d$ replaced by~$d'$).}
+
+\begin{figure}
+  \centering
+  \caption{}
+  \begin{subfigure}{0.45\textwidth}
+    \centering
+    \includegraphics[width=.8\textwidth]{pictures/area}
+    \caption{The set appearing in the analysis of the cross-polytope LSH:
+    $S_{X_1 Y_1} = \{|x| \leq X_1 \mbox{ and } |\alpha x + \beta y| \leq \alpha X_1 + \beta Y_1\}$.}
+    \label{gaussian_set}
+  \end{subfigure}
+  \qquad
+  \begin{subfigure}{0.45\textwidth}
+    \centering
+    \begin{tikzpicture}
+    \pgfplotsset{lowerboundplot/.style={%
+      scale only axis,
+      enlarge x limits=false,
+      enlarge y limits=false,
+      ymin=0.15,
+      ymax=0.4,
+      xmin=.1,
+      xmax=1e16,
+      width=4.7cm,
+      height=3.5cm,
+      ytick={0.15,0.2,0.25,0.3,0.35,0.4},
+      xtick={1e16,1e12,1e8,1e4,1},
+      no markers,
+      grid style={dotted,gray,thin},
+      grid=major,
+      ylabel={Sensitivity $\rho$},
+      ylabel shift=-5pt,
+      xlabel={Number of parts $T$},
+      legend cell align=left,
+      legend style={font=\footnotesize},
+      every axis plot/.append style={line width=1pt},
+      cycle list={{red, dashed},{blue}},
+    }}
+    \begin{semilogxaxis}[lowerboundplot]
+      \addplot table[x=num_parts,y=rho] {plot_data/cross_polytope_pgfplots_data.txt};
+      \addplot table[x=num_parts,y=rho] {plot_data/lower_bound_pgfplots_data.txt};
+      \legend{Cross-polytope LSH,Lower bound}
+    \end{semilogxaxis}
+    \end{tikzpicture}
+    \caption{Trade-off between $\rho$ and the number of parts for distances
+      $\sqrt{2} / 2$ and $\sqrt{2}$ (approximation $c=2$); both bounds
+      tend to $1/7$ (see discussion in Section~\ref{sec_lower}).}
+    \label{fig_lower}
+  \end{subfigure}
+\end{figure}
+
+\paragraph{``Partial'' cross-polytope LSH.}
+\label{sec:partial_cp}
+In the above discussion, we defined the cross-polytope LSH as a hash family that returns the closest neighbor among
+$\{\pm e_i\}_{1 \leq i \leq d}$ as a hash (after a (pseudo-)random rotation). In principle, we do not have to consider all $d$ basis vectors when computing the closest neighbor.
+By restricting the hash to $d' \leq d$ basis vectors instead, Theorem~\ref{rho_upper} still holds for the new hash family (with $d$ replaced by $d'$) since the analysis is essentially dimension-free.
+This slight generalization of the cross-polytope LSH turns out to be useful for experiments (see Section~\ref{sec:experiments}).
+Note that the case $d' = 1$ corresponds to the hyperplane LSH.

@@ -1,0 +1,186 @@
+\documentclass{article}
+\usepackage[utf8]{inputenc}
+\usepackage{geometry}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{hyperref}
+
+\geometry{a4paper, margin=1in}
+
+\title{Implementation Details: Hierarchical Navigable Small World (HNSW) Graphs}
+\author{Based on Malkov \& Yashunin}
+\date{}
+
+\begin{document}
+
+\maketitle
+
+\section{Global Parameters and Level Generation}
+The HNSW structure assigns a maximum layer $l$ to every inserted element based on an exponentially decaying probability distribution. This creates the hierarchical structure similar to a skip-list.
+
+\subsection{Parameters}
+\begin{itemize}
+    \item $M$: The number of established connections per element.
+    \item $M_{max}$: Maximum number of connections per element for layers $l > 0$.
+    \item $M_{max0}$: Maximum number of connections for layer $l = 0$ (typically $2 \cdot M$).
+    \item $m_L$: The normalization factor for level generation.
+    \item $efConstruction$: Size of the dynamic candidate list during index construction.
+    \item $ef$: Size of the dynamic candidate list during search.
+\end{itemize}
+
+\subsection{Level Assignment Formula}
+For a new element $q$, its maximum layer $l$ is drawn from a uniform random distribution:
+
+\begin{equation}
+    l = \lfloor -\ln(\text{unif}(0, 1)) \cdot m_L \rfloor
+\end{equation}
+
+The optimal value for the normalization factor $m_L$ is defined as:
+
+\begin{equation}
+    m_L = \frac{1}{\ln(M)}
+\end{equation}
+
+\section{Distance Metric}
+The algorithm relies on a defined distance function $\mathcal{D}(a, b)$.
+\begin{itemize}
+    \item \textbf{Euclidean ($L_2$):} $\mathcal{D}(a, b) = \|a - b\|_2$
+    \item \textbf{Cosine:} The paper suggests using normalized vectors with $L_2$ distance to simulate Cosine similarity.
+\end{itemize}
+
+\section{Algorithms}
+
+\subsection{Greedy Search (SEARCH-LAYER)}
+This function traverses the graph at a specific layer $l_c$ to find the nearest neighbors.
+
+\begin{algorithm}
+\caption{SEARCH-LAYER($q, ep, ef, l_c$)}
+\begin{algorithmic}[1]
+\Require Query $q$, Entry point $ep$, Candidate count $ef$, Layer number $l_c$
+\Ensure Set of nearest neighbors $W$
+\State $v \leftarrow \{ep\}$ \Comment{Set of visited elements}
+\State $C \leftarrow \{ep\}$ \Comment{Set of candidates to explore}
+\State $W \leftarrow \{ep\}$ \Comment{Dynamic list of found nearest neighbors}
+\While{$|C| > 0$}
+    \State $c \leftarrow$ Extract nearest element from $C$ to $q$
+    \State $f \leftarrow$ Get furthest element from $W$ to $q$
+    \If{$\mathcal{D}(c, q) > \mathcal{D}(f, q)$}
+        \State \textbf{break} \Comment{All elements in $C$ are further than worst neighbor}
+    \EndIf
+    \For{each neighbor $e$ of $c$ at layer $l_c$}
+        \If{$e \notin v$}
+            \State $v \leftarrow v \cup \{e\}$
+            \State $f \leftarrow$ Get furthest element from $W$ to $q$
+            \If{$\mathcal{D}(e, q) < \mathcal{D}(f, q)$ \textbf{or} $|W| < ef$}
+                \State $C \leftarrow C \cup \{e\}$
+                \State $W \leftarrow W \cup \{e\}$
+                \If{$|W| > ef$}
+                    \State Remove furthest element from $W$ to $q$
+                \EndIf
+            \EndIf
+        \EndIf
+    \EndFor
+\EndWhile
+\State \Return $W$
+\end{algorithmic}
+\end{algorithm}
+
+\subsection{Neighbor Selection Heuristic}
+This heuristic ensures spatial diversity by connecting candidates only if they are closer to the base element than to any already connected neighbor.
+
+\begin{algorithm}
+\caption{SELECT-NEIGHBORS-HEURISTIC($q, C, M$)}
+\begin{algorithmic}[1]
+\Require Base element $q$, Candidate elements $C$, Max links $M$
+\Ensure Selected neighbors $R$
+\State $R \leftarrow \emptyset$
+\State $W_d \leftarrow \emptyset$ \Comment{Queue for discarded candidates}
+\While{$|C| > 0$ \textbf{and} $|R| < M$}
+    \State $e \leftarrow$ Extract nearest element from $C$ to $q$
+    \If{$e$ is closer to $q$ than to any element from $R$}
+        \State $R \leftarrow R \cup \{e\}$
+    \Else
+        \State $W_d \leftarrow W_d \cup \{e\}$
+    \EndIf
+\EndWhile
+\If{$keepPrunedConnections$ is True \textbf{and} $|R| < M$}
+    \While{$|W_d| > 0$ \textbf{and} $|R| < M$}
+        \State $R \leftarrow R \cup$ Extract nearest element from $W_d$ to $q$
+    \EndWhile
+\EndIf
+\State \Return $R$
+\end{algorithmic}
+\end{algorithm}
+
+\newpage
+
+\subsection{Element Insertion}
+The insertion process builds the hierarchy incrementally.
+
+\begin{algorithm}
+\caption{INSERT($q, M, M_{max}, efConstruction, m_L$)}
+\begin{algorithmic}[1]
+\Require New element $q$, Global entry point $ep_{global}$, Top layer $L$
+\State $l \leftarrow \lfloor -\ln(\text{unif}(0, 1)) \cdot m_L \rfloor$
+\State $ep \leftarrow ep_{global}$
+\State \Comment{Phase 1: Zoom-out (Greedy search from top to insertion layer)}
+\For{$l_c \leftarrow L$ \textbf{down to} $l+1$}
+    \State $W \leftarrow \text{SEARCH-LAYER}(q, ep, ef=1, l_c)$
+    \State $ep \leftarrow$ Nearest element from $W$ to $q$
+\EndFor
+\State \Comment{Phase 2: Construction (Insert element in layers $l$ down to 0)}
+\For{$l_c \leftarrow \min(L, l)$ \textbf{down to} $0$}
+    \State $W \leftarrow \text{SEARCH-LAYER}(q, ep, efConstruction, l_c)$
+    \State $neighbors \leftarrow \text{SELECT-NEIGHBORS-HEURISTIC}(q, W, M)$
+    \State Add bidirectional connections from $neighbors$ to $q$ at layer $l_c$
+    \For{each $e \in neighbors$} \Comment{Shrink connections if overflow}
+        \State $eConn \leftarrow$ current neighbors of $e$ at layer $l_c$
+        \State $M_{limit} \leftarrow (l_c == 0) ? M_{max0} : M_{max}$
+        \If{$|eConn| > M_{limit}$}
+             \State $eConn_{new} \leftarrow \text{SELECT-NEIGHBORS-HEURISTIC}(e, eConn, M_{limit})$
+             \State Update neighborhood of $e$ at layer $l_c$ to $eConn_{new}$
+        \EndIf
+    \EndFor
+    \State $ep \leftarrow W$
+\EndFor
+\If{$l > L$}
+    \State $L \leftarrow l$
+    \State $ep_{global} \leftarrow q$
+\EndIf
+\end{algorithmic}
+\end{algorithm}
+
+\subsection{K-NN Search}
+Standard Approximate Nearest Neighbor Search using the hierarchy.
+
+\begin{algorithm}
+\caption{K-NN-SEARCH($q, K, ef$)}
+\begin{algorithmic}[1]
+\Require Query $q$, Number of neighbors $K$, Search parameter $ef$
+\State $ep \leftarrow ep_{global}$
+\State $L \leftarrow$ current top layer
+\For{$l_c \leftarrow L$ \textbf{down to} $1$}
+    \State $W \leftarrow \text{SEARCH-LAYER}(q, ep, ef=1, l_c)$
+    \State $ep \leftarrow$ Nearest element from $W$ to $q$
+\EndFor
+\State $W \leftarrow \text{SEARCH-LAYER}(q, ep, ef, l_c=0)$
+\State \Return $K$ nearest elements from $W$
+\end{algorithmic}
+\end{algorithm}
+
+\section{Implementation Notes}
+\begin{itemize}
+    \item \textbf{Data Structure:} Nodes should be stored with an adjacency list for each layer they belong to.
+    \item \textbf{Visited Set Optimization:} In Algorithm 1, the set $v$ grows rapidly. Do not use a standard hash set. Instead, use a \texttt{BitSet} or a \texttt{visited\_tag} (an integer ID stored on the node compared against a global query ID) to check visitation in $O(1)$.
+    \item \textbf{Recommended Ranges:}
+    \begin{itemize}
+        \item $M \in [5, 48]$
+        \item $efConstruction \approx 100$
+        \item $M_{max} \approx M$
+        \item $M_{max0} \approx 2 \cdot M$
+    \end{itemize}
+\end{itemize}
+
+\end{document}

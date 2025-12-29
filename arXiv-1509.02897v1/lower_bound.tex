@@ -1,0 +1,55 @@
+
+\section{Lower bound}
+\label{sec_lower}
+
+Let $\mathcal{H}$ be a hash family on $S^{d-1}$. For $0 < r_1 < r_2 < 2$ we would like to understand the trade-off between
+$p_1$ and $p_2$, where $p_1$ is the \emph{smallest} probability of collision under $\mathcal{H}$ for points at distance \emph{at most $r_1$}
+and $p_2$ is the \emph{largest} probability of collision for points at distance \emph{at least $r_2$}.
+We focus on the case $r_2 \approx \sqrt{2}$ because setting $r_2$ to $\sqrt{2} - o(1)$ (as $d$ tends to infinity) allows us to replace $p_2$ with the following quantity that is somewhat easier to handle:
+\[
+p_2^* = \underset{\substack{h \sim \mathcal{H}\\u, v \sim S^{d-1}}}{\mathrm{Pr}}[h(u) = h(v)].
+\]
+This quantity is at most $p_2 + o(1)$, since the distance between two random points on a unit sphere $S^{d-1}$ is tightly concentrated around $\sqrt{2}$.
+So for a hash family $\mathcal{H}$ on a unit sphere $S^{d-1}$, we would like to understand the upper bound on $p_1$ in terms of $p_2^*$
+and $0 < r_1 < \sqrt{2}$.
+
+For $0 \leq \tau \leq \sqrt{2}$ and $\eta \in \Rbb$, we define
+\[
+\Lambda(\tau, \eta) = \underset{X, Y \sim N(0, 1)}
+  {\mathrm{Pr}}\left[X \geq \eta \mbox{ and } \left(1 - \frac{\tau^2}{2}\right) \cdot X + \sqrt{\tau^2 - \frac{\tau^4}{4}} \cdot Y \geq \eta\right] \Bigm/ \underset{X \sim N(0, 1)}{\mathrm{Pr}}[X \geq \eta] \;.
+\]
+
+We are now ready to formulate the main result of this section.
+
+\begin{theorem}
+  \label{rho_lower}
+  Let $\mathcal{H}$ be a hash family on $S^{d-1}$ such that every function in $\mathcal{H}$ partitions the sphere into
+  at most $T$ parts of measure
+  at most $1/2$. Then we have
+  $
+  p_1 \leq \Lambda(r_1, \eta) + o(1)
+  $,
+  where $\eta \in \Rbb$ is such that $\Phi_c(\eta) = p_2^*$ and $o(1)$ is a quantity that depends on $T$ and $r_1$ and
+  tends to $0$ as $d$ tends to infinity.
+\end{theorem}
+
+The idea of the proof is first to reason about one part of the partition using the isoperimetric inequality from~\cite{FS02},
+and then to apply a certain averaging argument by proving concavity of a function related to $\Lambda$ using a delicate analytic argument.
+For the full proof, see Appendix~\ref{app_lower}.
+
+We note that the above requirement of all parts induced by $\mathcal{H}$ having measure at most $1/2$ is only a technicality.
+We conjecture that Theorem~\ref{rho_lower} holds without this restriction. In any case, as we will see below, in the interesting range of parameters
+this restriction is essentially irrelevant.
+
+One can observe that if every hash function in $\mathcal{H}$ partitions the sphere into at most $T$ parts, then $p_2^* \geq \frac{1}{T}$
+(indeed, $p_2^*$ is precisely the average sum of squares of measures of the parts). This observation, combined with
+Theorem~\ref{rho_lower}, leads to the following interesting consequence.
+Specifically, we can numerically estimate $\Lambda$ in order to give a lower bound on $\rho = \frac{\log(1 / p_1)}{\log(1 / p_2)}$ for any hash family $\mathcal{H}$ in which every function induces at most $T$ parts of measure at most $1/2$.
+See Figure~\ref{fig_lower}, where we plot this lower bound for
+$r_1 = \sqrt{2} / 2$,\footnote{The situation is qualitatively similar for other values of~$r_1$.} together with an upper bound that is given by the cross-polytope LSH\footnote{More specifically, for the ``partial'' version from Section~\ref{sec:partial_cp}, since $T$ should be constant, while $d$ grows} (for which we use numerical estimates for~(\ref{prob_exp})). We can make several conclusions from this plot. First, the cross-polytope LSH gives an almost optimal trade-off between $\rho$ and $T$. Given that the evaluation time for the
+cross-polytope LSH is $O(T \log T)$ (if one uses pseudo-random rotations), we conclude that in order to improve upon the cross-polytope LSH
+substantially in practice, one should design an LSH family with $\rho$ being close to optimal and evaluation time that
+is \emph{sublinear in $T$}. We note that none of the known LSH families for a sphere has been shown to have this property.
+This direction looks especially interesting since the convergence of $\rho$ to the optimal value (as $T$ tends to infinity) is extremely slow
+(for instance, according to Figure~\ref{fig_lower}, for $r_1 = \sqrt{2} / 2$ and $r_2 \approx \sqrt{2}$ we need more than $10^{5}$ parts to achieve
+$\rho \leq 0.2$, whereas the optimal $\rho$ is $1/7 \approx 0.143$).
