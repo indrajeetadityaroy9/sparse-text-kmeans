@@ -542,11 +542,16 @@ inline AsymmetricDist asymmetric_distance<uint8_t, 32>(
 #endif
 
 // ============================================================================
-// Reconstructed Dot Product (Asymmetric Distance V2)
+// Asymmetric Search Distance (Reconstructed Dot Product)
 // ============================================================================
 
 /**
- * Estimate dot product using Cross-Polytope codes.
+ * Computes asymmetric distance for HNSW navigation.
+ *
+ * Returns NEGATIVE of reconstructed dot product.
+ * Lower value = more similar (compatible with HNSW min-heaps).
+ *
+ * Formula: distance = -Σᵣ sign_r × query.rotated_vecs[r][node.index_r]
  *
  * THE KEY INSIGHT: The node's code tells us which axis it lies closest to
  * in the rotated space. We use the query's actual value at that axis
@@ -557,15 +562,13 @@ inline AsymmetricDist asymmetric_distance<uint8_t, 32>(
  *   - Query has full rotated vector y_r
  *   - Contribution to dot product: sign_r * y_r[index_r]
  *
- * Score = sum_r( sign_r * query.rotated_vecs[r][index_r] )
- *
  * This is an UNBIASED ESTIMATOR of the cosine similarity!
- * Higher score = more similar vectors.
  *
- * For HNSW (which minimizes distance), use negative score.
+ * CRITICAL: Returns negative score to convert MIPS to Min-Distance.
+ *           This allows HNSW's min-heap navigation to work correctly.
  */
 template <typename ComponentT, size_t K>
-inline AsymmetricDist estimate_dot_product(
+inline AsymmetricDist asymmetric_search_distance(
     const CPQuery<ComponentT, K>& query,
     const CPCode<ComponentT, K>& node_code) {
 
@@ -588,17 +591,17 @@ inline AsymmetricDist estimate_dot_product(
         }
     }
 
-    // Return NEGATIVE score for HNSW (which minimizes distance)
-    // Higher dot product = lower distance
+    // CRITICAL: Negate for min-heap compatibility
+    // Higher dot product = lower distance = more similar
     return -score;
 }
 
 /**
- * SIMD-optimized dot product estimation for K=16, uint8_t.
+ * SIMD-optimized asymmetric search distance for K=16, uint8_t.
  */
 #if CPHNSW_HAS_AVX2
 template <>
-inline AsymmetricDist estimate_dot_product<uint8_t, 16>(
+inline AsymmetricDist asymmetric_search_distance<uint8_t, 16>(
     const CPQuery<uint8_t, 16>& query,
     const CPCode<uint8_t, 16>& node_code) {
 
@@ -619,11 +622,11 @@ inline AsymmetricDist estimate_dot_product<uint8_t, 16>(
 #endif
 
 /**
- * SIMD-optimized dot product estimation for K=32, uint8_t.
+ * SIMD-optimized asymmetric search distance for K=32, uint8_t.
  */
 #if CPHNSW_HAS_AVX2
 template <>
-inline AsymmetricDist estimate_dot_product<uint8_t, 32>(
+inline AsymmetricDist asymmetric_search_distance<uint8_t, 32>(
     const CPQuery<uint8_t, 32>& query,
     const CPCode<uint8_t, 32>& node_code) {
 

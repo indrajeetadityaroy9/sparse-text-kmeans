@@ -71,8 +71,8 @@ public:
             }
 
             const auto& ep_code = graph.get_code(ep);
-            // Use reconstructed dot product (returns -score for min-heap)
-            AsymmetricDist dist = estimate_dot_product(query, ep_code);
+            // Use asymmetric search distance (returns -score for min-heap)
+            AsymmetricDist dist = asymmetric_search_distance(query, ep_code);
 
             C.push(ep, dist);
             W.push(ep, dist);
@@ -112,9 +112,9 @@ public:
                     continue;
                 }
 
-                // Estimate dot product with node
+                // Compute asymmetric search distance with node
                 const auto& neighbor_code = graph.get_code(neighbor_id);
-                AsymmetricDist dist = estimate_dot_product(query, neighbor_code);
+                AsymmetricDist dist = asymmetric_search_distance(query, neighbor_code);
 
                 // Add to candidates if promising
                 f = W.top();

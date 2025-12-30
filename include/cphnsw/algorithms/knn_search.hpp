@@ -127,7 +127,7 @@ public:
             for (const auto& r : results) {
                 if (seen_ids.insert(r.id).second) {
                     // Re-compute distance with primary query for fair comparison
-                    AsymmetricDist true_dist = estimate_dot_product(query, graph.get_code(r.id));
+                    AsymmetricDist true_dist = asymmetric_search_distance(query, graph.get_code(r.id));
                     all_results.push_back({r.id, true_dist});
                 }
             }

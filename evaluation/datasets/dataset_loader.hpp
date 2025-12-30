@@ -214,4 +214,89 @@ inline Dataset generate_random_sphere(
     return ds;
 }
 
+/**
+ * Normalize vectors to unit length (L2 normalization).
+ * CRITICAL for angular LSH - all vectors must be on unit sphere.
+ *
+ * @param vecs   Pointer to vectors (row-major, count x dim)
+ * @param count  Number of vectors
+ * @param dim    Vector dimension
+ */
+inline void normalize_vectors(Float* vecs, size_t count, size_t dim) {
+    for (size_t i = 0; i < count; ++i) {
+        Float* v = vecs + i * dim;
+        Float norm_sq = 0;
+        for (size_t d = 0; d < dim; ++d) {
+            norm_sq += v[d] * v[d];
+        }
+        Float norm = std::sqrt(norm_sq);
+        if (norm > 1e-10f) {
+            Float inv_norm = 1.0f / norm;
+            for (size_t d = 0; d < dim; ++d) {
+                v[d] *= inv_norm;
+            }
+        }
+    }
+}
+
+/**
+ * Load GIST-1M dataset.
+ *
+ * CRITICAL: GIST vectors are NOT pre-normalized.
+ * This function normalizes all vectors to unit length after loading.
+ *
+ * Expected files in directory:
+ * - gist_base.fvecs (1M x 960)
+ * - gist_query.fvecs (1K x 960)
+ * - gist_groundtruth.ivecs (1K x 100)
+ */
+inline Dataset load_gist1m(const std::string& dir) {
+    Dataset ds;
+
+    size_t base_dim, base_count;
+    ds.base_vectors = load_fvecs(dir + "/gist_base.fvecs", base_dim, base_count);
+    ds.dim = base_dim;  // 960
+    ds.num_base = base_count;  // 1M
+
+    // CRITICAL: Normalize to unit sphere for angular LSH
+    normalize_vectors(ds.base_vectors.data(), ds.num_base, ds.dim);
+
+    size_t query_dim, query_count;
+    ds.query_vectors = load_fvecs(dir + "/gist_query.fvecs", query_dim, query_count);
+    ds.num_queries = query_count;
+
+    if (query_dim != ds.dim) {
+        throw std::runtime_error("Query dimension mismatch");
+    }
+
+    // CRITICAL: Also normalize queries
+    normalize_vectors(ds.query_vectors.data(), ds.num_queries, ds.dim);
+
+    size_t k_gt, gt_count;
+    ds.ground_truth = load_ivecs(dir + "/gist_groundtruth.ivecs", k_gt, gt_count);
+    ds.k_gt = k_gt;
+
+    return ds;
+}
+
+/**
+ * Load SIFT-1M with optional normalization.
+ *
+ * SIFT vectors may not be pre-normalized. For CP-LSH angular distance,
+ * vectors should be normalized to unit length.
+ *
+ * @param dir        Directory containing SIFT files
+ * @param normalize  If true, normalize vectors to unit length
+ */
+inline Dataset load_sift1m_normalized(const std::string& dir, bool normalize = true) {
+    Dataset ds = load_sift1m(dir);
+
+    if (normalize) {
+        normalize_vectors(ds.base_vectors.data(), ds.num_base, ds.dim);
+        normalize_vectors(ds.query_vectors.data(), ds.num_queries, ds.dim);
+    }
+
+    return ds;
+}
+
 }  // namespace cphnsw::eval

@@ -182,7 +182,7 @@ public:
         size_t dim,
         Graph& graph,
         const CPHNSWParams& params,
-        std::mt19937_64& rng,
+        std::mt19937_64& /* rng */,
         uint64_t& query_counter) {
 
         LayerLevel new_level = graph.get_max_layer(new_node_id);
@@ -221,62 +221,24 @@ public:
                 new_query, entry_points, params.ef_construction, layer, graph,
                 ++query_counter);
 
-            // Select best neighbors using TRUE cosine distance (accurate)
+            // Select best neighbors using TRUE cosine distance (with cached distances)
             size_t M_limit = (layer == 0) ? params.M_max0 : params.M;
-            auto neighbors = SelectNeighbors<ComponentT, K>::select_with_true_distance(
+            auto neighbors_with_dist = SelectNeighbors<ComponentT, K>::select_with_true_distance_cached(
                 new_vec, all_vectors, dim, candidates, M_limit, params.keep_pruned);
 
-            // Add connections from new node to neighbors
-            for (NodeId neighbor_id : neighbors) {
-                graph.add_neighbor(new_node_id, layer, neighbor_id);
+            // Add connections from new node to neighbors (with cached distance)
+            for (const auto& [neighbor_id, dist] : neighbors_with_dist) {
+                graph.add_neighbor_with_dist_safe(new_node_id, layer, neighbor_id, dist);
             }
 
-            // Add reverse connections and shrink if overflow
-            for (NodeId neighbor_id : neighbors) {
-                // Check if neighbor exists at this layer
+            // Add reverse connections using CACHED DISTANCE PRUNING
+            for (const auto& [neighbor_id, dist_to_new] : neighbors_with_dist) {
                 if (graph.get_max_layer(neighbor_id) < layer) {
                     continue;
                 }
 
-                // Add reverse connection
-                bool added = graph.add_neighbor(neighbor_id, layer, new_node_id);
-
-                // If failed to add (overflow), need to prune using TRUE distance
-                if (!added) {
-                    auto [neighbor_links, link_count] = graph.get_neighbors(neighbor_id, layer);
-
-                    std::vector<SearchResult> neighbor_candidates;
-                    neighbor_candidates.reserve(link_count + 1);
-
-                    // Get neighbor's original vector
-                    const Float* neighbor_vec = &all_vectors[neighbor_id * dim];
-
-                    // Compute TRUE distances from neighbor to all its links
-                    for (size_t i = 0; i < link_count; ++i) {
-                        if (neighbor_links[i] != INVALID_NODE) {
-                            const Float* link_vec = &all_vectors[neighbor_links[i] * dim];
-                            Float dot = 0;
-                            for (size_t d = 0; d < dim; ++d) {
-                                dot += neighbor_vec[d] * link_vec[d];
-                            }
-                            neighbor_candidates.push_back({neighbor_links[i], -dot});
-                        }
-                    }
-
-                    // Add new node to candidates with TRUE distance
-                    Float dot_new = 0;
-                    for (size_t d = 0; d < dim; ++d) {
-                        dot_new += neighbor_vec[d] * new_vec[d];
-                    }
-                    neighbor_candidates.push_back({new_node_id, -dot_new});
-
-                    // Re-select using simple heuristic (all distances are TRUE now)
-                    auto new_neighbors = SelectNeighbors<ComponentT, K>::select_simple(
-                        neighbor_candidates, M_limit);
-
-                    // Update neighbor's connections
-                    graph.set_neighbors(neighbor_id, layer, new_neighbors);
-                }
+                // Use cached distance pruning (no vector fetches in critical section)
+                graph.add_neighbor_with_dist_safe(neighbor_id, layer, new_node_id, dist_to_new);
             }
 
             // Update entry points for next layer
@@ -296,27 +258,29 @@ public:
     }
 
     /**
-     * FLOAT BACKBONE INSERT: Uses TRUE cosine for BOTH search and edge selection.
+     * PARALLEL HYBRID INSERT: Thread-safe version using atomic query counter.
      *
-     * Used for the first N nodes (backbone) to guarantee 100% connectivity.
-     * O(n) per insertion, but n is small for backbone (e.g., 10,000 nodes).
-     *
-     * After backbone is built, use insert_hybrid for remaining nodes.
+     * CRITICAL: Uses atomic fetch_add for EACH search to ensure unique query IDs.
+     * Uses thread-safe graph methods for concurrent edge modifications.
      *
      * @param new_node_id     ID of the new node (already added to graph)
+     * @param new_query       Query struct with code and magnitudes
      * @param new_vec         Original float vector being inserted
      * @param all_vectors     All original vectors stored so far
      * @param dim             Vector dimension
      * @param graph           HNSW graph (modified)
      * @param params          Index parameters
+     * @param query_counter   ATOMIC counter for query IDs (fresh ID per search)
      */
-    static void insert_float(
+    static void insert_hybrid_parallel(
         NodeId new_node_id,
+        const Query& new_query,
         const Float* new_vec,
         const std::vector<Float>& all_vectors,
         size_t dim,
         Graph& graph,
-        const CPHNSWParams& params) {
+        const CPHNSWParams& params,
+        std::atomic<uint64_t>& query_counter) {
 
         LayerLevel new_level = graph.get_max_layer(new_node_id);
 
@@ -324,98 +288,73 @@ public:
         NodeId ep = graph.entry_point();
         LayerLevel top_layer = graph.top_layer();
 
-        // Handle empty graph
+        // Handle empty graph (should not happen in parallel phase)
         if (ep == INVALID_NODE) {
-            graph.set_entry_point(new_node_id, new_level);
+            graph.set_entry_point_safe(new_node_id, new_level);
             return;
         }
 
-        // For backbone: brute force search using TRUE cosine distance
-        // Find all candidates by scanning existing nodes
-        std::vector<SearchResult> all_candidates;
-        all_candidates.reserve(new_node_id);
+        // Phase 1: Zoom from top layer down to new_level + 1
+        // CRITICAL: Fresh query_id for EACH search
+        std::vector<NodeId> entry_points = {ep};
 
-        for (NodeId i = 0; i < new_node_id; ++i) {
-            const Float* node_vec = &all_vectors[i * dim];
-            Float dot = 0;
-            for (size_t d = 0; d < dim; ++d) {
-                dot += new_vec[d] * node_vec[d];
+        for (LayerLevel l = top_layer; l > new_level && l > 0; --l) {
+            uint64_t qid = query_counter.fetch_add(1);  // Fresh ID!
+            auto results = SearchLayer<ComponentT, K>::search(
+                new_query, entry_points, 1, l, graph, qid);
+
+            if (!results.empty()) {
+                entry_points = {results[0].id};
             }
-            all_candidates.push_back({i, -dot});  // Negative for min-heap
         }
 
-        // Sort by true distance
-        std::sort(all_candidates.begin(), all_candidates.end());
-
-        // Insert at layers min(top_layer, new_level) down to 0
+        // Phase 2: Insert at layers min(top_layer, new_level) down to 0
         LayerLevel start_layer = std::min(top_layer, new_level);
 
         for (int l = static_cast<int>(start_layer); l >= 0; --l) {
             LayerLevel layer = static_cast<LayerLevel>(l);
+
+            // CRITICAL: Fresh query_id for this search
+            uint64_t qid = query_counter.fetch_add(1);
+            auto candidates = SearchLayer<ComponentT, K>::search(
+                new_query, entry_points, params.ef_construction, layer, graph, qid);
+
+            // Select best neighbors using TRUE cosine distance (with cached distances)
             size_t M_limit = (layer == 0) ? params.M_max0 : params.M;
+            auto neighbors_with_dist = SelectNeighbors<ComponentT, K>::select_with_true_distance_cached(
+                new_vec, all_vectors, dim, candidates, M_limit, params.keep_pruned);
 
-            // Filter candidates that exist at this layer
-            std::vector<SearchResult> layer_candidates;
-            for (const auto& c : all_candidates) {
-                if (graph.get_max_layer(c.id) >= layer) {
-                    layer_candidates.push_back(c);
-                    if (layer_candidates.size() >= params.ef_construction) break;
-                }
+            // Add connections from new node to neighbors (thread-safe, with cached distance)
+            for (const auto& [neighbor_id, dist] : neighbors_with_dist) {
+                graph.add_neighbor_with_dist_safe(new_node_id, layer, neighbor_id, dist);
             }
 
-            // Select neighbors using TRUE distance (already computed)
-            auto neighbors = SelectNeighbors<ComponentT, K>::select_with_true_distance(
-                new_vec, all_vectors, dim, layer_candidates, M_limit, params.keep_pruned);
-
-            // Add connections from new node to neighbors
-            for (NodeId neighbor_id : neighbors) {
-                graph.add_neighbor(new_node_id, layer, neighbor_id);
-            }
-
-            // Add reverse connections and shrink if overflow
-            for (NodeId neighbor_id : neighbors) {
+            // Add reverse connections using CACHED DISTANCE PRUNING
+            // CRITICAL OPTIMIZATION: No more vector fetches inside critical section!
+            for (const auto& [neighbor_id, dist_to_new] : neighbors_with_dist) {
                 if (graph.get_max_layer(neighbor_id) < layer) {
                     continue;
                 }
 
-                bool added = graph.add_neighbor(neighbor_id, layer, new_node_id);
+                // Compute reverse distance (from neighbor's perspective to new node)
+                // For symmetric distance (like cosine), this equals dist_to_new
+                // The graph.add_neighbor_with_dist_safe handles overflow via O(M) cached scan
+                graph.add_neighbor_with_dist_safe(neighbor_id, layer, new_node_id, dist_to_new);
+            }
 
-                if (!added) {
-                    auto [neighbor_links, link_count] = graph.get_neighbors(neighbor_id, layer);
-
-                    std::vector<SearchResult> neighbor_candidates;
-                    neighbor_candidates.reserve(link_count + 1);
-
-                    const Float* neighbor_vec = &all_vectors[neighbor_id * dim];
-
-                    for (size_t i = 0; i < link_count; ++i) {
-                        if (neighbor_links[i] != INVALID_NODE) {
-                            const Float* link_vec = &all_vectors[neighbor_links[i] * dim];
-                            Float dot = 0;
-                            for (size_t d = 0; d < dim; ++d) {
-                                dot += neighbor_vec[d] * link_vec[d];
-                            }
-                            neighbor_candidates.push_back({neighbor_links[i], -dot});
-                        }
-                    }
-
-                    Float dot_new = 0;
-                    for (size_t d = 0; d < dim; ++d) {
-                        dot_new += neighbor_vec[d] * new_vec[d];
-                    }
-                    neighbor_candidates.push_back({new_node_id, -dot_new});
-
-                    auto new_neighbors = SelectNeighbors<ComponentT, K>::select_simple(
-                        neighbor_candidates, M_limit);
-
-                    graph.set_neighbors(neighbor_id, layer, new_neighbors);
-                }
+            // Update entry points for next layer
+            entry_points.clear();
+            for (const auto& r : candidates) {
+                entry_points.push_back(r.id);
+            }
+            if (entry_points.empty()) {
+                entry_points.push_back(ep);
             }
         }
 
-        // Update global entry point if needed
+        // Update global entry point if needed (thread-safe)
         if (new_level > top_layer) {
-            graph.set_entry_point(new_node_id, new_level);
+            graph.set_entry_point_safe(new_node_id, new_level);
         }
     }
 

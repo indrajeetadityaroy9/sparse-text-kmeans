@@ -226,6 +226,46 @@ public:
     }
 
     /**
+     * Encode vector as CPQuery using caller-provided buffer.
+     * Thread-safe: Uses caller-provided buffer instead of shared member.
+     *
+     * CRITICAL: Use this method in parallel construction to avoid data corruption.
+     *
+     * @param vec     Input vector (length >= dim_)
+     * @param buffer  Work buffer (length >= padded_dim())
+     * @return        CPQuery with code and rotated vectors
+     */
+    CPQuery<ComponentT, K> encode_query_with_buffer(const Float* vec, Float* buffer) const {
+        CPQuery<ComponentT, K> query;
+        size_t pdim = rotation_chain_.padded_dim();
+
+        for (size_t r = 0; r < K; ++r) {
+            // Apply rotation to caller-provided buffer (thread-safe)
+            rotation_chain_.apply_copy(vec, buffer, r);
+
+            // Store the FULL rotated vector for dot product reconstruction
+            query.rotated_vecs[r].resize(pdim);
+            std::copy(buffer, buffer + pdim, query.rotated_vecs[r].begin());
+
+            // Find argmax |buffer[i]| using SIMD-accelerated function
+            size_t max_idx;
+            Float max_abs;
+            find_argmax_abs(buffer, pdim, max_idx, max_abs);
+
+            // Store primary code component
+            bool is_negative = (buffer[max_idx] < 0);
+            query.primary_code.components[r] =
+                CPCode<ComponentT, K>::encode(max_idx, is_negative);
+
+            // Store magnitude for multiprobe ranking
+            query.magnitudes[r] = max_abs;
+            query.original_indices[r] = static_cast<uint32_t>(max_idx);
+        }
+
+        return query;
+    }
+
+    /**
      * Encode vector with additional probe data for multiprobe search.
      * Alias for encode_query (backwards compatibility).
      *

@@ -131,6 +131,9 @@ struct SearchResult {
 
 /**
  * CPHNSWParams: Configuration parameters for the index.
+ *
+ * Default values optimized for HIGH RECALL use cases (SIFT-like data).
+ * For faster builds with lower recall, reduce k, M, and ef_construction.
  */
 struct CPHNSWParams {
     /// Original vector dimension
@@ -139,22 +142,22 @@ struct CPHNSWParams {
     /// Padded dimension (next power of 2 >= dim)
     size_t padded_dim = 0;
 
-    /// Number of rotations (code width K)
-    size_t k = 16;
+    /// Number of rotations (code width K) - higher = more precision
+    size_t k = 32;
 
-    /// Max connections per node at layers > 0
-    size_t M = 16;
+    /// Max connections per node at layers > 0 - higher = more robust graph
+    size_t M = 32;
 
     /// Max connections at layer 0 (typically 2*M)
-    size_t M_max0 = 32;
+    size_t M_max0 = 64;
 
-    /// Search width during construction
-    size_t ef_construction = 100;
+    /// Search width during construction - deeper search for hybrid edges
+    size_t ef_construction = 200;
 
     /// Level multiplier: 1/ln(M)
     double m_L = 0.0;
 
-    /// Keep pruned connections for robustness
+    /// Keep pruned connections for robustness (essential for connectivity)
     bool keep_pruned = true;
 
     /// Random seed for reproducibility

@@ -64,7 +64,7 @@ void check_correlation(
         // CP estimator
         auto q_cp = encoder.encode_query(&queries[q_idx * dim]);
         auto b_code = encoder.encode(&base[b_idx * dim]);
-        float est_sim = -estimate_dot_product(q_cp, b_code);  // Negate to get similarity
+        float est_sim = -asymmetric_search_distance(q_cp, b_code);  // Negate to get similarity
 
         true_sims.push_back(true_sim);
         est_sims.push_back(est_sim);

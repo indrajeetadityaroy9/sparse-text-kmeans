@@ -166,6 +166,16 @@ if(CPHNSW_BUILD_EVAL)
         ${CMAKE_CURRENT_SOURCE_DIR}/evaluation
     )
 
+    # Master evaluation protocol (all 6 experiments for PhD portfolio)
+    add_executable(eval_master
+        evaluation/eval_master.cpp
+    )
+    target_link_libraries(eval_master PRIVATE cphnsw)
+    target_include_directories(eval_master PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/evaluation
+    )
+
     # GPU evaluation (SIFT-1M with CUDA acceleration)
     if(CPHNSW_USE_CUDA)
         add_executable(eval_sift_gpu

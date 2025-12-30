@@ -96,7 +96,7 @@ int main() {
     for (size_t q = 0; q < num_queries; ++q) {
         for (size_t b = 0; b < num_base; ++b) {
             Float true_sim = true_dot_product(queries[q], base[b]);
-            Float est_sim = -estimate_dot_product(query_codes[q], base_codes[b]);
+            Float est_sim = -asymmetric_search_distance(query_codes[q], base_codes[b]);
 
             true_sims.push_back(true_sim);
             est_sims.push_back(est_sim);
@@ -156,7 +156,7 @@ int main() {
 
         for (size_t b = 0; b < num_base; ++b) {
             true_ranked[b] = {-true_dot_product(queries[q], base[b]), b};
-            est_ranked[b] = {estimate_dot_product(query_codes[q], base_codes[b]), b};
+            est_ranked[b] = {asymmetric_search_distance(query_codes[q], base_codes[b]), b};
         }
 
         std::partial_sort(true_ranked.begin(), true_ranked.begin() + 10, true_ranked.end());

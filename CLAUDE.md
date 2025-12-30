@@ -6,17 +6,21 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 # Build (from repo root)
-cd cp-hnsw && mkdir build && cd build
+mkdir -p build && cd build
 cmake .. -DCMAKE_BUILD_TYPE=Release
 make -j
 
-# Build with AVX-512
-cmake .. -DCMAKE_BUILD_TYPE=Release -DCPHNSW_USE_AVX512=ON
+# Build without AVX-512 (for older CPUs)
+cmake .. -DCMAKE_BUILD_TYPE=Release -DCPHNSW_USE_AVX512=OFF
 
-# Run evaluation
+# Build without CUDA (for CPU-only systems)
+cmake .. -DCMAKE_BUILD_TYPE=Release -DCPHNSW_USE_CUDA=OFF
+
+# Run evaluation (from build directory)
 ./eval_cphnsw           # Random sphere datasets
 ./eval_comprehensive    # Multi-dataset evaluation
-./eval_sift             # SIFT-1M evaluation (needs OpenMP for fast ground truth)
+./eval_sift             # SIFT-1M evaluation
+./eval_sift_gpu         # SIFT-1M with GPU acceleration (requires CUDA)
 
 # Run tests (requires GTest)
 ctest
@@ -31,7 +35,9 @@ ctest
 
 | Option | Default | Purpose |
 |--------|---------|---------|
-| `CPHNSW_USE_AVX512` | OFF | Enable AVX-512 SIMD |
+| `CPHNSW_USE_AVX512` | ON | Enable AVX-512 SIMD |
+| `CPHNSW_USE_OPENMP` | ON | Enable OpenMP parallelization |
+| `CPHNSW_USE_CUDA` | ON | Enable CUDA GPU acceleration |
 | `CPHNSW_BUILD_TESTS` | ON | Build GTest unit tests |
 | `CPHNSW_BUILD_EVAL` | ON | Build evaluation executables |
 | `CPHNSW_BUILD_BENCHMARKS` | OFF | Build Google Benchmark microbenchmarks |
@@ -43,7 +49,7 @@ CP-HNSW is a memory-efficient approximate nearest neighbor search library combin
 ### Core Components
 
 ```
-cp-hnsw/include/cphnsw/
+include/cphnsw/
 ├── core/types.hpp           # CPCode, CPQuery, CPHNSWParams
 ├── quantizer/
 │   ├── hadamard.hpp         # Fast Hadamard Transform (scalar/AVX2/AVX512)
@@ -57,20 +63,31 @@ cp-hnsw/include/cphnsw/
 ├── algorithms/
 │   ├── search_layer.hpp     # SEARCH-LAYER algorithm
 │   ├── select_neighbors.hpp # SELECT-NEIGHBORS-HEURISTIC
-│   ├── insert.hpp           # INSERT with tiered construction
+│   ├── insert.hpp           # INSERT with hybrid construction + parallel linking
 │   └── knn_search.hpp       # K-NN search + multiprobe variant
 └── index/cp_hnsw_index.hpp  # Main public API (CPHNSWIndex)
 ```
 
 ### Key Design Decisions
 
-1. **Tiered Construction**: First 10K nodes use full float search (backbone phase) for guaranteed connectivity; remaining nodes use CP search with float edge selection (hybrid phase).
+1. **Hybrid Construction**: CP search for fast candidate generation + TRUE cosine distance for accurate edge selection. Achieves 100% graph connectivity without backbone phase.
 
-2. **Asymmetric Distance**: CPQuery stores full rotated vectors + magnitudes; CPCode stores only K bytes. This enables proper gradient-based navigation despite discrete codes.
+2. **Asymmetric Search Distance**: `asymmetric_search_distance()` returns negative dot product for min-heap compatibility. Enables proper gradient-based navigation despite discrete codes.
 
-3. **Flat Memory Layout**: FlatHNSWGraph uses contiguous arrays instead of vector<vector> for cache locality.
+3. **Fine-Grained Locking**: Per-node spinlocks with `_mm_pause()` hint for hyperthreading-friendly parallel builds. Four-phase batch insertion prevents vector reallocation races.
 
-4. **Template Parameters**: `CPHNSWIndex<ComponentT, K>` where ComponentT is `uint8_t` (d ≤ 128) or `uint16_t` (d > 128), K is code width (default 16).
+4. **Flat Memory Layout**: FlatHNSWGraph uses contiguous arrays instead of vector<vector> for cache locality.
+
+5. **Template Parameters**: `CPHNSWIndex<ComponentT, K>` where ComponentT is `uint8_t` (d ≤ 128) or `uint16_t` (d > 128), K is code width (default 32).
+
+### Default Parameters (optimized for high recall)
+
+```cpp
+k = 32               // Code width (rotations)
+M = 32               // Max connections per node
+M_max0 = 64          // Max connections at layer 0
+ef_construction = 200 // Search width during construction
+```
 
 ### Type Aliases
 
@@ -82,5 +99,5 @@ using CPHNSWIndex32 = CPHNSWIndex<uint8_t, 32>;   // Higher precision
 
 ## Reference Papers
 
-- `arXiv-1509.02897v1/`: "Practical and Optimal LSH for Angular Distance" (Cross-Polytope LSH)
-- `arXiv-1603.09320/`: "Efficient and robust approximate nearest neighbor search using HNSW"
+- `resources/cross-polytope-lsh/`: "Practical and Optimal LSH for Angular Distance" (Andoni et al. 2015)
+- `resources/hnsw-paper/`: "Efficient and robust approximate nearest neighbor search using HNSW" (Malkov & Yashunin 2018)
