@@ -40,6 +40,14 @@ using namespace cphnsw;
 using namespace cphnsw::eval;
 
 // =============================================================================
+// Compile-time K selection (set via -DEVAL_K=16/32/64)
+// =============================================================================
+#ifndef EVAL_K
+#define EVAL_K 32
+#endif
+constexpr size_t COMPILE_TIME_K = EVAL_K;
+
+// =============================================================================
 // Benchmark Configuration
 // =============================================================================
 
@@ -49,7 +57,7 @@ struct BenchmarkConfig {
     std::string output_dir;
     std::vector<int> experiments;  // Which experiments to run (1-6)
     size_t M = 32;
-    size_t K = 32;
+    size_t K = COMPILE_TIME_K;
     size_t ef_construction = 200;
     size_t limit = 0;  // 0 = no limit, >0 = limit base vectors
     bool verbose = true;
@@ -76,7 +84,7 @@ void experiment1_recall_vs_qps(const Dataset& sift, const std::string& output_di
     Timer timer;
     timer.start();
 
-    CPHNSWIndex<uint8_t, 32> index(sift.dim, config.M, config.ef_construction);
+    CPHNSWIndex<uint8_t, COMPILE_TIME_K> index(sift.dim, config.M, config.ef_construction);
     index.add_batch_parallel(sift.base_vectors.data(), sift.num_base);
 
     double build_time = timer.elapsed_s();
@@ -187,7 +195,7 @@ void experiment2_build_scalability(const Dataset& sift, const std::string& outpu
         Timer timer;
         timer.start();
 
-        CPHNSWIndex<uint8_t, 32> index(sift.dim, config.M, config.ef_construction);
+        CPHNSWIndex<uint8_t, COMPILE_TIME_K> index(sift.dim, config.M, config.ef_construction);
         index.add_batch_parallel(sift.base_vectors.data(), sift.num_base);
 
         double build_time = timer.elapsed_s();
@@ -241,7 +249,7 @@ void experiment3_topology_ablation(const Dataset& sift, const std::string& outpu
 
     // Method 1: Hybrid (True Cosine edges) - the production path
     {
-        CPHNSWIndex<uint8_t, 32> index(sift.dim, config.M, config.ef_construction);
+        CPHNSWIndex<uint8_t, COMPILE_TIME_K> index(sift.dim, config.M, config.ef_construction);
         index.add_batch_parallel(sift.base_vectors.data(), ablation_size);
 
         size_t connected = index.verify_connectivity();
@@ -366,7 +374,7 @@ void experiment5_memory_footprint(const Dataset& sift, const std::string& output
     size_t rss_before = get_rss_bytes();
 
     // Build index
-    CPHNSWIndex<uint8_t, 32> index(sift.dim, config.M, config.ef_construction);
+    CPHNSWIndex<uint8_t, COMPILE_TIME_K> index(sift.dim, config.M, config.ef_construction);
     index.add_batch_parallel(sift.base_vectors.data(), sift.num_base);
 
     size_t rss_after = get_rss_bytes();
@@ -470,7 +478,7 @@ void experiment6_gist(const Dataset& gist, const std::string& output_dir,
     timer.start();
 
     // For GIST (960-dim), we use CPHNSWIndex16 with uint16_t
-    CPHNSWIndex<uint16_t, 32> index(gist.dim, config.M, config.ef_construction);
+    CPHNSWIndex<uint16_t, COMPILE_TIME_K> index(gist.dim, config.M, config.ef_construction);
     index.add_batch_parallel(gist.base_vectors.data(), gist.num_base);
 
     double build_time = timer.elapsed_s();

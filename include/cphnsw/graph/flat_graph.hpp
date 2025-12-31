@@ -8,6 +8,8 @@
 #include <cassert>
 #include <algorithm>
 #include <limits>
+#include <random>
+#include <new>  // For std::align_val_t
 
 // For _mm_pause() on x86
 #if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
@@ -18,6 +20,16 @@
 #endif
 
 namespace cphnsw {
+
+// ============================================================================
+// Flash Memory Layout Constants
+// ============================================================================
+
+/// Maximum neighbors per node (compile-time for Flash layout)
+constexpr size_t FLASH_MAX_M = 64;
+
+/// Cache line size for alignment
+constexpr size_t FLASH_CACHE_LINE = 64;
 
 /**
  * Spinlock: Lightweight lock for fine-grained per-node synchronization.
@@ -60,133 +72,300 @@ public:
 // Verify Spinlock is 1 byte to fit in struct padding
 static_assert(sizeof(Spinlock) == 1, "Spinlock must be 1 byte to fit in CompactNode padding!");
 
+// ============================================================================
+// Flash Memory Layout: NeighborBlock (SoA - SIMD Optimized)
+// ============================================================================
+
 /**
- * FlatHNSWGraph: Memory-efficient HNSW graph structure.
+ * NeighborBlock: Cache-optimized storage for a node's neighbors.
  *
- * CRITICAL: Uses flat memory layout instead of vector<vector>.
+ * FLASH OPTIMIZATION: Stores COPIES of neighbor codes alongside neighbor IDs.
+ * This eliminates pointer-chasing during search - all data needed to compute
+ * distances to neighbors is contiguous and can be prefetched together.
+ *
+ * RABITQ AUGMENTATION (SIGMOD 2024):
+ * Also stores quantized magnitudes for each neighbor's code components.
+ * This enables magnitude-weighted distance computation for better accuracy.
+ *
+ * CRITICAL: SoA (Struct-of-Arrays) TRANSPOSED LAYOUT
+ * ================================================
+ * codes_transposed[component_idx][neighbor_idx]
+ * magnitudes_transposed[component_idx][neighbor_idx]
+ *
+ * Why SoA instead of AoS?
+ * - Enables SIMD batch processing of multiple neighbors simultaneously
+ * - For byte k: codes_transposed[k][0..N] is CONTIGUOUS
+ * - Single AVX-512 load fetches byte k for 16 neighbors at once
+ * - Gather operation then looks up query.rotated_vecs[k][indices]
+ *
+ * Example for K=32, M=32:
+ *   codes_transposed[0][0..31] = component 0 for all 32 neighbors (contiguous!)
+ *   codes_transposed[1][0..31] = component 1 for all 32 neighbors
+ *   ...
+ *   magnitudes_transposed[0][0..31] = magnitude 0 for all 32 neighbors
+ *   magnitudes_transposed[1][0..31] = magnitude 1 for all 32 neighbors
+ *   ...
+ *
+ * Memory layout (for M=32, K=32):
+ *   - ids[M]:                       32 * 4  = 128 bytes
+ *   - codes_transposed[K][M]:       32 * 32 = 1024 bytes
+ *   - magnitudes_transposed[K][M]:  32 * 32 = 1024 bytes (NEW: RaBitQ)
+ *   - distances[M]:                 32 * 4  = 128 bytes
+ *   - count + lock + padding
+ *   Total: ~2306 bytes = 37 cache lines
+ *
+ * SIMD BATCH PROCESSING:
+ *   - Process 16 neighbors per AVX-512 iteration
+ *   - Load codes_transposed[k][0..15] → 16 bytes contiguous
+ *   - Load magnitudes_transposed[k][0..15] → 16 bytes contiguous
+ *   - Expand to 32-bit indices → gather from rotated_vecs[k]
+ *   - Multiply by magnitudes and accumulate 16 scores in parallel
+ *   - Expected speedup: 3-5x over scalar
+ */
+template <typename ComponentT, size_t K>
+struct alignas(FLASH_CACHE_LINE) NeighborBlock {
+    /// Neighbor node IDs (INVALID_NODE if slot unused)
+    NodeId ids[FLASH_MAX_M];
+
+    /// TRANSPOSED neighbor codes for SIMD batch processing
+    /// Layout: codes_transposed[component_idx][neighbor_idx]
+    /// This enables contiguous loads of the same component across all neighbors
+    ComponentT codes_transposed[K][FLASH_MAX_M];
+
+    /// TRANSPOSED neighbor magnitudes for RaBitQ-style distance (NEW)
+    /// Layout: magnitudes_transposed[component_idx][neighbor_idx]
+    uint8_t magnitudes_transposed[K][FLASH_MAX_M];
+
+    /// Cached distances (negative dot product) for O(1) pruning decisions
+    float distances[FLASH_MAX_M];
+
+    /// Actual number of neighbors (0 to M)
+    uint8_t count;
+
+    /// Per-node spinlock for thread-safe updates
+    mutable Spinlock lock;
+
+    /// Padding to cache line boundary (updated for new magnitudes array)
+    uint8_t _padding[FLASH_CACHE_LINE - ((sizeof(NodeId) * FLASH_MAX_M +
+                                          sizeof(ComponentT) * K * FLASH_MAX_M +
+                                          sizeof(uint8_t) * K * FLASH_MAX_M +
+                                          sizeof(float) * FLASH_MAX_M +
+                                          sizeof(uint8_t) + sizeof(Spinlock)) % FLASH_CACHE_LINE)];
+
+    NeighborBlock() : count(0), lock() {
+        std::fill(std::begin(ids), std::end(ids), INVALID_NODE);
+        for (size_t k = 0; k < K; ++k) {
+            std::fill(std::begin(codes_transposed[k]), std::end(codes_transposed[k]), ComponentT(0));
+            std::fill(std::begin(magnitudes_transposed[k]), std::end(magnitudes_transposed[k]), uint8_t(0));
+        }
+        std::fill(std::begin(distances), std::end(distances), std::numeric_limits<float>::max());
+    }
+
+    // Copy constructor: copy data, create new lock
+    NeighborBlock(const NeighborBlock& other) : count(other.count), lock() {
+        std::copy(std::begin(other.ids), std::end(other.ids), std::begin(ids));
+        for (size_t k = 0; k < K; ++k) {
+            std::copy(std::begin(other.codes_transposed[k]), std::end(other.codes_transposed[k]),
+                      std::begin(codes_transposed[k]));
+            std::copy(std::begin(other.magnitudes_transposed[k]), std::end(other.magnitudes_transposed[k]),
+                      std::begin(magnitudes_transposed[k]));
+        }
+        std::copy(std::begin(other.distances), std::end(other.distances), std::begin(distances));
+    }
+
+    // Move constructor: move data, create new lock
+    NeighborBlock(NeighborBlock&& other) noexcept : count(other.count), lock() {
+        std::copy(std::begin(other.ids), std::end(other.ids), std::begin(ids));
+        for (size_t k = 0; k < K; ++k) {
+            std::copy(std::begin(other.codes_transposed[k]), std::end(other.codes_transposed[k]),
+                      std::begin(codes_transposed[k]));
+            std::copy(std::begin(other.magnitudes_transposed[k]), std::end(other.magnitudes_transposed[k]),
+                      std::begin(magnitudes_transposed[k]));
+        }
+        std::copy(std::begin(other.distances), std::end(other.distances), std::begin(distances));
+    }
+
+    // Copy assignment: copy data, keep own lock
+    NeighborBlock& operator=(const NeighborBlock& other) {
+        if (this != &other) {
+            count = other.count;
+            std::copy(std::begin(other.ids), std::end(other.ids), std::begin(ids));
+            for (size_t k = 0; k < K; ++k) {
+                std::copy(std::begin(other.codes_transposed[k]), std::end(other.codes_transposed[k]),
+                          std::begin(codes_transposed[k]));
+                std::copy(std::begin(other.magnitudes_transposed[k]), std::end(other.magnitudes_transposed[k]),
+                          std::begin(magnitudes_transposed[k]));
+            }
+            std::copy(std::begin(other.distances), std::end(other.distances), std::begin(distances));
+        }
+        return *this;
+    }
+
+    // Move assignment: move data, keep own lock
+    NeighborBlock& operator=(NeighborBlock&& other) noexcept {
+        if (this != &other) {
+            count = other.count;
+            std::copy(std::begin(other.ids), std::end(other.ids), std::begin(ids));
+            for (size_t k = 0; k < K; ++k) {
+                std::copy(std::begin(other.codes_transposed[k]), std::end(other.codes_transposed[k]),
+                          std::begin(codes_transposed[k]));
+                std::copy(std::begin(other.magnitudes_transposed[k]), std::end(other.magnitudes_transposed[k]),
+                          std::begin(magnitudes_transposed[k]));
+            }
+            std::copy(std::begin(other.distances), std::end(other.distances), std::begin(distances));
+        }
+        return *this;
+    }
+
+    /// Get component k for neighbor i (SoA access)
+    ComponentT get_component(size_t k, size_t neighbor_idx) const {
+        return codes_transposed[k][neighbor_idx];
+    }
+
+    /// Get magnitude k for neighbor i (SoA access, NEW)
+    uint8_t get_magnitude(size_t k, size_t neighbor_idx) const {
+        return magnitudes_transposed[k][neighbor_idx];
+    }
+
+    /// Get pointer to component k for all neighbors (for SIMD batch load)
+    const ComponentT* get_component_row(size_t k) const {
+        return codes_transposed[k];
+    }
+
+    /// Get pointer to magnitude k for all neighbors (for SIMD batch load, NEW)
+    const uint8_t* get_magnitude_row(size_t k) const {
+        return magnitudes_transposed[k];
+    }
+
+    /// Copy a code into neighbor slot i (scatters to transposed layout)
+    /// RABITQ: Also copies magnitudes for magnitude-weighted distance
+    void set_neighbor_code(size_t i, const CPCode<ComponentT, K>& code) {
+        for (size_t k = 0; k < K; ++k) {
+            codes_transposed[k][i] = code.components[k];
+            magnitudes_transposed[k][i] = code.magnitudes[k];
+        }
+    }
+
+    /// Create CPCode from neighbor at index i (gathers from transposed layout)
+    /// RABITQ: Also gathers magnitudes
+    CPCode<ComponentT, K> get_neighbor_code_copy(size_t i) const {
+        CPCode<ComponentT, K> result;
+        for (size_t k = 0; k < K; ++k) {
+            result.components[k] = codes_transposed[k][i];
+            result.magnitudes[k] = magnitudes_transposed[k][i];
+        }
+        return result;
+    }
+
+    /// Legacy API: Get code pointer for neighbor i (DEPRECATED - use batch API)
+    /// Returns temporary buffer, caller must copy immediately
+    /// This exists only for backward compatibility with scalar code paths
+    void get_neighbor_code_to_buffer(size_t i, ComponentT* buffer) const {
+        for (size_t k = 0; k < K; ++k) {
+            buffer[k] = codes_transposed[k][i];
+        }
+    }
+
+    /// Get magnitudes for neighbor i to buffer (for compatibility)
+    void get_neighbor_magnitudes_to_buffer(size_t i, uint8_t* buffer) const {
+        for (size_t k = 0; k < K; ++k) {
+            buffer[k] = magnitudes_transposed[k][i];
+        }
+    }
+};
+
+/**
+ * FlatNSWGraph: Memory-efficient NSW (single-layer) graph structure.
+ *
+ * NSW FLATTEN: Removed hierarchy for simpler, faster graph traversal.
+ * Per "Down with the Hierarchy" - single layer with random entry points
+ * achieves equivalent performance for high-dimensional data.
+ *
+ * FLASH MEMORY LAYOUT: Optimized for cache locality during search.
+ * Each node has a NeighborBlock containing:
+ *   - Neighbor IDs
+ *   - COPIES of neighbor codes (eliminates pointer chasing)
+ *   - Cached distances for O(1) pruning
  *
  * Benefits:
- * - Contiguous memory for better cache locality
- * - 16 bytes per node metadata vs 96+ bytes with vector<vector>
- * - Codes stored in parallel array for SIMD-friendly access
+ * - All neighbor data prefetchable in one operation
+ * - Codes stored in AoS layout for SIMD-friendly access
+ * - 64-byte aligned blocks for cache line efficiency
+ * - K=32 codes fit perfectly in AVX-256 (1 neighbor) or AVX-512 (2 neighbors)
  *
  * Memory layout:
- * - links_pool: All links stored contiguously
- *   [Node0_L0_links | Node0_L1_links | Node1_L0_links | ...]
- * - nodes: Compact metadata (offset + layer info)
- * - codes: Parallel array of CP codes
- * - visited_markers: For thread-safe visited tracking
+ * - codes_: Node's own code (for encoding/construction)
+ * - neighbor_blocks_: NeighborBlock per node (Flash layout)
+ * - visited_markers_: For thread-safe visited tracking
+ *
+ * Trade-off: More memory (neighbor codes stored redundantly) for faster search.
  */
 template <typename ComponentT, size_t K>
 class FlatHNSWGraph {
 public:
-    /// Maximum supported layers (exponential decay means rarely > 10)
-    static constexpr size_t MAX_LAYERS = 16;
-
-    /**
-     * Compact node metadata.
-     * 24 bytes aligned for cache efficiency.
-     *
-     * Includes a per-node spinlock for thread-safe neighbor updates.
-     * The spinlock fits in the struct padding (1 byte).
-     */
-    struct alignas(8) CompactNode {
-        uint32_t link_offset;           // Index into links_pool
-        uint8_t max_layer;              // Highest layer this node belongs to
-        uint8_t link_counts[16];        // Actual neighbor count per layer (supports MAX_LAYERS=16)
-        uint8_t _padding[2];            // Reduced padding (was 3)
-        mutable Spinlock lock;          // Per-node lock for thread-safe updates (1 byte)
-
-        CompactNode() : link_offset(0), max_layer(0), _padding{}, lock() {
-            std::memset(link_counts, 0, sizeof(link_counts));
-        }
-
-        // Allow copy construction (lock starts unlocked in copy)
-        CompactNode(const CompactNode& other)
-            : link_offset(other.link_offset), max_layer(other.max_layer), _padding{}, lock() {
-            std::memcpy(link_counts, other.link_counts, sizeof(link_counts));
-        }
-
-        // Allow copy assignment (lock stays unchanged)
-        CompactNode& operator=(const CompactNode& other) {
-            if (this != &other) {
-                link_offset = other.link_offset;
-                max_layer = other.max_layer;
-                std::memcpy(link_counts, other.link_counts, sizeof(link_counts));
-            }
-            return *this;
-        }
-    };
-    static_assert(sizeof(CompactNode) == 24, "CompactNode must be 24 bytes for cache efficiency");
+    /// Flash memory layout: NeighborBlock type for this graph
+    using Block = NeighborBlock<ComponentT, K>;
 
     /**
      * Construct graph with given parameters.
      */
     explicit FlatHNSWGraph(const CPHNSWParams& params)
-        : params_(params), entry_point_(INVALID_NODE), top_layer_(0) {
+        : params_(params) {
+
+        // Validate M fits in Flash layout
+        assert(params.M <= FLASH_MAX_M && "M exceeds FLASH_MAX_M!");
 
         // Reserve initial capacity
-        nodes_.reserve(1024);
         codes_.reserve(1024);
+        neighbor_blocks_.reserve(1024);
         visited_markers_.reserve(1024);
-
-        // Estimate links per node: M_max0 + M * avg_layers
-        // Conservatively estimate 2 layers average
-        size_t links_per_node = params.M_max0 + params.M * 2;
-        links_pool_.reserve(1024 * links_per_node);
-        dists_pool_.reserve(1024 * links_per_node);
     }
 
     /// Get number of nodes
-    size_t size() const { return nodes_.size(); }
+    size_t size() const { return codes_.size(); }
 
     /// Check if empty
-    bool empty() const { return nodes_.empty(); }
-
-    /// Get entry point
-    NodeId entry_point() const { return entry_point_; }
-
-    /// Get top layer
-    LayerLevel top_layer() const { return top_layer_; }
-
-    /// Set entry point and top layer
-    void set_entry_point(NodeId node, LayerLevel layer) {
-        entry_point_ = node;
-        top_layer_ = layer;
-    }
+    bool empty() const { return codes_.empty(); }
 
     /// Get parameters
     const CPHNSWParams& params() const { return params_; }
 
     /**
-     * Add a new node with given code and level.
+     * NSW: Get random entry points for search.
+     * Replaces hierarchical entry point with random sampling.
+     *
+     * @param k     Number of entry points to return
+     * @param seed  Random seed (typically query_id for reproducibility)
+     * @return      Vector of random node IDs
+     */
+    std::vector<NodeId> get_random_entry_points(size_t k, uint64_t seed) const {
+        if (empty()) return {};
+        std::mt19937_64 rng(seed);
+        std::uniform_int_distribution<NodeId> dist(0, static_cast<NodeId>(size() - 1));
+        std::vector<NodeId> entries(std::min(k, size()));
+        for (auto& e : entries) e = dist(rng);
+        return entries;
+        // NOTE: For static build (immutable index), indices 0..N-1 are always valid.
+        // No need to check for "holes" since we don't support deletion.
+    }
+
+    /**
+     * NSW + Flash: Add a new node with given code.
+     * Creates a NeighborBlock for Flash memory layout.
      *
      * @param code   CP code for the node
-     * @param level  Maximum layer for this node
      * @return       Node ID
      */
-    NodeId add_node(const CPCode<ComponentT, K>& code, LayerLevel level) {
-        NodeId id = static_cast<NodeId>(nodes_.size());
+    NodeId add_node(const CPCode<ComponentT, K>& code) {
+        NodeId id = static_cast<NodeId>(codes_.size());
 
-        // Add compact node metadata
-        CompactNode node;
-        node.max_layer = level;
-        node.link_offset = static_cast<uint32_t>(links_pool_.size());
-
-        // Reserve space for links at all layers
-        // Layer 0: M_max0 slots, Layers 1+: M slots each
-        size_t total_slots = params_.M_max0;
-        for (LayerLevel l = 1; l <= level; ++l) {
-            total_slots += params_.M;
-        }
-
-        // Extend links pool with INVALID_NODE placeholders
-        size_t old_size = links_pool_.size();
-        links_pool_.resize(old_size + total_slots, INVALID_NODE);
-        dists_pool_.resize(old_size + total_slots, std::numeric_limits<float>::max());
-
-        nodes_.push_back(node);
+        // Store node's own code
         codes_.push_back(code);
+
+        // Create neighbor block (Flash layout)
+        neighbor_blocks_.push_back(Block{});
+
+        // Visited marker for search
         visited_markers_.push_back(std::make_unique<std::atomic<uint64_t>>(0));
 
         return id;
@@ -209,99 +388,89 @@ public:
     }
 
     /**
-     * Get node metadata.
+     * Flash: Get the neighbor block for a node.
+     * Returns reference for direct access during search.
      */
-    const CompactNode& get_node(NodeId id) const {
-        assert(id < nodes_.size());
-        return nodes_[id];
+    const Block& get_neighbor_block(NodeId id) const {
+        assert(id < neighbor_blocks_.size());
+        return neighbor_blocks_[id];
     }
 
     /**
-     * Get maximum layer for a node.
+     * Flash: Get mutable neighbor block reference.
      */
-    LayerLevel get_max_layer(NodeId id) const {
-        return nodes_[id].max_layer;
+    Block& get_neighbor_block_mut(NodeId id) {
+        assert(id < neighbor_blocks_.size());
+        return neighbor_blocks_[id];
     }
 
     /**
-     * Get neighbor count at a specific layer.
+     * NSW: Get neighbor count for a node.
      */
-    size_t get_neighbor_count(NodeId id, LayerLevel layer) const {
-        const auto& node = nodes_[id];
-        assert(layer <= node.max_layer);
-        return node.link_counts[layer];
+    size_t get_neighbor_count(NodeId id) const {
+        return neighbor_blocks_[id].count;
     }
 
     /**
-     * Get neighbors at a specific layer.
+     * NSW: Get neighbors for a node (legacy API).
      *
      * @param id     Node ID
-     * @param layer  Layer level
      * @return       Pointer to neighbor array and count
      */
-    std::pair<const NodeId*, size_t> get_neighbors(NodeId id, LayerLevel layer) const {
-        const auto& node = nodes_[id];
-        assert(layer <= node.max_layer);
-
-        uint32_t offset = get_layer_offset(node, layer);
-        size_t count = node.link_counts[layer];
-
-        return {links_pool_.data() + offset, count};
+    std::pair<const NodeId*, size_t> get_neighbors(NodeId id) const {
+        const auto& block = neighbor_blocks_[id];
+        return {block.ids, block.count};
     }
 
     /**
-     * Add a neighbor to a node at a specific layer.
+     * NSW + Flash: Add a neighbor to a node.
+     * Copies neighbor's code into the block for cache locality.
      *
      * @param id        Node ID
-     * @param layer     Layer level
      * @param neighbor  Neighbor to add
-     * @return          true if added, false if layer is full
+     * @return          true if added, false if full
      */
-    bool add_neighbor(NodeId id, LayerLevel layer, NodeId neighbor) {
-        auto& node = nodes_[id];
-        assert(layer <= node.max_layer);
+    bool add_neighbor(NodeId id, NodeId neighbor) {
+        auto& block = neighbor_blocks_[id];
+        size_t current_count = block.count;
 
-        size_t max_count = (layer == 0) ? params_.M_max0 : params_.M;
-        size_t current_count = node.link_counts[layer];
-
-        if (current_count >= max_count) {
+        if (current_count >= params_.M) {
             return false;
         }
 
-        uint32_t offset = get_layer_offset(node, layer);
-        links_pool_[offset + current_count] = neighbor;
-        node.link_counts[layer] = static_cast<uint8_t>(current_count + 1);
+        // Store neighbor ID
+        block.ids[current_count] = neighbor;
 
+        // FLASH: Copy neighbor's code for cache locality during search
+        block.set_neighbor_code(current_count, codes_[neighbor]);
+
+        block.count = static_cast<uint8_t>(current_count + 1);
         return true;
     }
 
     /**
-     * Set neighbors for a node at a specific layer (replaces existing).
+     * NSW + Flash: Set neighbors for a node (replaces existing).
+     * Copies all neighbor codes into the block.
      *
      * @param id         Node ID
-     * @param layer      Layer level
      * @param neighbors  New neighbor list
      */
-    void set_neighbors(NodeId id, LayerLevel layer, const std::vector<NodeId>& neighbors) {
-        auto& node = nodes_[id];
-        assert(layer <= node.max_layer);
+    void set_neighbors(NodeId id, const std::vector<NodeId>& neighbors) {
+        auto& block = neighbor_blocks_[id];
+        size_t count = std::min(neighbors.size(), params_.M);
 
-        size_t max_count = (layer == 0) ? params_.M_max0 : params_.M;
-        size_t count = std::min(neighbors.size(), max_count);
-
-        uint32_t offset = get_layer_offset(node, layer);
-
-        // Copy neighbors
+        // Copy neighbors and their codes
         for (size_t i = 0; i < count; ++i) {
-            links_pool_[offset + i] = neighbors[i];
+            block.ids[i] = neighbors[i];
+            block.set_neighbor_code(i, codes_[neighbors[i]]);
         }
 
         // Clear remaining slots
-        for (size_t i = count; i < max_count; ++i) {
-            links_pool_[offset + i] = INVALID_NODE;
+        for (size_t i = count; i < params_.M; ++i) {
+            block.ids[i] = INVALID_NODE;
         }
 
-        node.link_counts[layer] = static_cast<uint8_t>(count);
+        block.count = static_cast<uint8_t>(count);
     }
 
     /**
@@ -331,94 +500,88 @@ public:
     }
 
     /**
-     * Thread-safe: Add a neighbor to a node at a specific layer.
-     * Uses per-node spinlock for fine-grained synchronization.
+     * NSW + Flash Thread-safe: Add a neighbor to a node.
+     * Uses per-node spinlock and copies neighbor code.
      *
      * @param id        Node ID
-     * @param layer     Layer level
      * @param neighbor  Neighbor to add
-     * @return          true if added (or already exists), false if layer is full
+     * @return          true if added (or already exists), false if full
      */
-    bool add_neighbor_safe(NodeId id, LayerLevel layer, NodeId neighbor) {
-        auto& node = nodes_[id];
-        assert(layer <= node.max_layer);
+    bool add_neighbor_safe(NodeId id, NodeId neighbor) {
+        auto& block = neighbor_blocks_[id];
 
-        Spinlock::Guard guard(node.lock);
+        Spinlock::Guard guard(block.lock);
 
-        size_t max_count = (layer == 0) ? params_.M_max0 : params_.M;
-        size_t current_count = node.link_counts[layer];
-        uint32_t offset = get_layer_offset(node, layer);
+        size_t current_count = block.count;
 
         // Check for duplicate to prevent multiple threads adding same neighbor
         for (size_t i = 0; i < current_count; ++i) {
-            if (links_pool_[offset + i] == neighbor) {
+            if (block.ids[i] == neighbor) {
                 return true;  // Already exists
             }
         }
 
-        if (current_count >= max_count) {
+        if (current_count >= params_.M) {
             return false;
         }
 
-        links_pool_[offset + current_count] = neighbor;
-        node.link_counts[layer] = static_cast<uint8_t>(current_count + 1);
+        block.ids[current_count] = neighbor;
+        block.set_neighbor_code(current_count, codes_[neighbor]);
+        block.count = static_cast<uint8_t>(current_count + 1);
 
         return true;
     }
 
     /**
-     * Thread-safe: Add neighbor with cached distance for O(1) pruning.
+     * NSW + Flash Thread-safe: Add neighbor with cached distance.
      *
-     * CRITICAL OPTIMIZATION: Stores distance alongside link to avoid
-     * recomputing distances inside the critical section during pruning.
-     * This reduces lock hold time from ~5µs to ~50ns.
+     * CRITICAL OPTIMIZATION: Uses cached distances in block for O(1) pruning.
+     * Also copies neighbor code for Flash cache locality.
      *
      * @param id        Node ID
-     * @param layer     Layer level
      * @param neighbor  Neighbor to add
-     * @param dist      Distance to neighbor (lower = better, e.g., negative dot product)
+     * @param dist      Distance to neighbor (lower = better)
      * @return          true if added or replaced worse neighbor, false if rejected
      */
-    bool add_neighbor_with_dist_safe(NodeId id, LayerLevel layer, NodeId neighbor, float dist) {
-        auto& node = nodes_[id];
-        assert(layer <= node.max_layer);
+    bool add_neighbor_with_dist_safe(NodeId id, NodeId neighbor, float dist) {
+        auto& block = neighbor_blocks_[id];
 
-        Spinlock::Guard guard(node.lock);
+        Spinlock::Guard guard(block.lock);
 
-        size_t max_count = (layer == 0) ? params_.M_max0 : params_.M;
-        size_t current_count = node.link_counts[layer];
-        uint32_t offset = get_layer_offset(node, layer);
+        size_t current_count = block.count;
 
         // Check for duplicate
         for (size_t i = 0; i < current_count; ++i) {
-            if (links_pool_[offset + i] == neighbor) {
+            if (block.ids[i] == neighbor) {
                 return true;  // Already exists
             }
         }
 
         // Case 1: Not full - just append
-        if (current_count < max_count) {
-            links_pool_[offset + current_count] = neighbor;
-            dists_pool_[offset + current_count] = dist;
-            node.link_counts[layer] = static_cast<uint8_t>(current_count + 1);
+        if (current_count < params_.M) {
+            block.ids[current_count] = neighbor;
+            block.set_neighbor_code(current_count, codes_[neighbor]);
+            block.distances[current_count] = dist;
+            block.count = static_cast<uint8_t>(current_count + 1);
             return true;
         }
 
-        // Case 2: Full - find worst neighbor using CACHED distances (O(M) scan, no vector fetches!)
+        // Case 2: Full - find worst neighbor using CACHED distances
         size_t worst_idx = 0;
-        float worst_dist = dists_pool_[offset];
+        float worst_dist = block.distances[0];
 
         for (size_t i = 1; i < current_count; ++i) {
-            if (dists_pool_[offset + i] > worst_dist) {
-                worst_dist = dists_pool_[offset + i];
+            if (block.distances[i] > worst_dist) {
+                worst_dist = block.distances[i];
                 worst_idx = i;
             }
         }
 
         // Replace worst if new neighbor is better
         if (dist < worst_dist) {
-            links_pool_[offset + worst_idx] = neighbor;
-            dists_pool_[offset + worst_idx] = dist;
+            block.ids[worst_idx] = neighbor;
+            block.set_neighbor_code(worst_idx, codes_[neighbor]);
+            block.distances[worst_idx] = dist;
             return true;
         }
 
@@ -426,80 +589,61 @@ public:
     }
 
     /**
-     * Thread-safe: Set neighbors for a node at a specific layer.
-     * Uses per-node spinlock for fine-grained synchronization.
+     * NSW + Flash Thread-safe: Set neighbors for a node.
+     * Copies all neighbor codes.
      *
      * @param id         Node ID
-     * @param layer      Layer level
      * @param neighbors  New neighbor list
      */
-    void set_neighbors_safe(NodeId id, LayerLevel layer, const std::vector<NodeId>& neighbors) {
-        auto& node = nodes_[id];
-        assert(layer <= node.max_layer);
+    void set_neighbors_safe(NodeId id, const std::vector<NodeId>& neighbors) {
+        auto& block = neighbor_blocks_[id];
 
-        Spinlock::Guard guard(node.lock);
+        Spinlock::Guard guard(block.lock);
 
-        size_t max_count = (layer == 0) ? params_.M_max0 : params_.M;
-        size_t count = std::min(neighbors.size(), max_count);
+        size_t count = std::min(neighbors.size(), params_.M);
 
-        uint32_t offset = get_layer_offset(node, layer);
-
-        // Copy neighbors
+        // Copy neighbors and their codes
         for (size_t i = 0; i < count; ++i) {
-            links_pool_[offset + i] = neighbors[i];
+            block.ids[i] = neighbors[i];
+            block.set_neighbor_code(i, codes_[neighbors[i]]);
         }
 
         // Clear remaining slots
-        for (size_t i = count; i < max_count; ++i) {
-            links_pool_[offset + i] = INVALID_NODE;
+        for (size_t i = count; i < params_.M; ++i) {
+            block.ids[i] = INVALID_NODE;
         }
 
-        node.link_counts[layer] = static_cast<uint8_t>(count);
+        block.count = static_cast<uint8_t>(count);
     }
 
-    /**
-     * Thread-safe: Update entry point if new node has higher layer.
-     *
-     * @param node   Node ID
-     * @param level  Node's maximum layer
-     */
-    void set_entry_point_safe(NodeId node, LayerLevel level) {
-        Spinlock::Guard guard(entry_lock_);
-        if (level > top_layer_ || entry_point_ == INVALID_NODE) {
-            entry_point_ = node;
-            top_layer_ = level;
-        }
-    }
+    // NOTE: set_entry_point_safe removed for NSW flatten (no hierarchy)
 
     /**
-     * Thread-safe: Add a link with automatic pruning if full.
+     * NSW + Flash Thread-safe: Add a link with automatic pruning if full.
      *
      * This performs the ENTIRE read-modify-write transaction under ONE lock
      * to prevent lost updates. The caller provides a distance function to
      * compute distances for pruning decisions.
      *
      * @param id           Node ID to modify
-     * @param layer        Layer level
      * @param new_neighbor Neighbor to add
      * @param new_dist     Distance to new neighbor (lower = better)
      * @param dist_func    Function(NodeId) -> float to compute distance to existing neighbors
      */
     template<typename DistFunc>
-    void add_link_with_pruning(NodeId id, LayerLevel layer, NodeId new_neighbor,
+    void add_link_with_pruning(NodeId id, NodeId new_neighbor,
                                float new_dist, DistFunc dist_func) {
-        auto& node = nodes_[id];
-        assert(layer <= node.max_layer);
+        auto& block = neighbor_blocks_[id];
 
-        Spinlock::Guard guard(node.lock);
+        Spinlock::Guard guard(block.lock);
 
-        size_t max_count = (layer == 0) ? params_.M_max0 : params_.M;
-        size_t current_count = node.link_counts[layer];
-        uint32_t offset = get_layer_offset(node, layer);
+        size_t current_count = block.count;
 
         // Case 1: Not full - just add
-        if (current_count < max_count) {
-            links_pool_[offset + current_count] = new_neighbor;
-            node.link_counts[layer] = static_cast<uint8_t>(current_count + 1);
+        if (current_count < params_.M) {
+            block.ids[current_count] = new_neighbor;
+            block.set_neighbor_code(current_count, codes_[new_neighbor]);
+            block.count = static_cast<uint8_t>(current_count + 1);
             return;
         }
 
@@ -509,7 +653,7 @@ public:
         candidates.reserve(current_count + 1);
 
         for (size_t i = 0; i < current_count; ++i) {
-            NodeId neighbor = links_pool_[offset + i];
+            NodeId neighbor = block.ids[i];
             if (neighbor != INVALID_NODE) {
                 float dist = dist_func(neighbor);
                 candidates.emplace_back(dist, neighbor);
@@ -520,15 +664,16 @@ public:
         // Sort by distance (lower is better)
         std::sort(candidates.begin(), candidates.end());
 
-        // Keep best M neighbors
-        size_t keep = std::min(candidates.size(), max_count);
+        // Keep best M neighbors (with their codes)
+        size_t keep = std::min(candidates.size(), params_.M);
         for (size_t i = 0; i < keep; ++i) {
-            links_pool_[offset + i] = candidates[i].second;
+            block.ids[i] = candidates[i].second;
+            block.set_neighbor_code(i, codes_[candidates[i].second]);
         }
-        for (size_t i = keep; i < max_count; ++i) {
-            links_pool_[offset + i] = INVALID_NODE;
+        for (size_t i = keep; i < params_.M; ++i) {
+            block.ids[i] = INVALID_NODE;
         }
-        node.link_counts[layer] = static_cast<uint8_t>(keep);
+        block.count = static_cast<uint8_t>(keep);
     }
 
     /**
@@ -538,54 +683,153 @@ public:
      * @param count  Total number of nodes after reservation
      */
     void reserve_nodes(size_t count) {
-        nodes_.reserve(count);
         codes_.reserve(count);
+        neighbor_blocks_.reserve(count);
         visited_markers_.reserve(count);
+    }
 
-        // Estimate links per node: M_max0 + M * avg_layers (assume 2)
-        size_t links_per_node = params_.M_max0 + params_.M * 2;
-        links_pool_.reserve(count * links_per_node);
-        dists_pool_.reserve(count * links_per_node);
+    /**
+     * Ingest a pre-built k-NN graph (for GPU construction).
+     *
+     * Clears any existing graph and populates from the given neighbor lists.
+     * Used by CAGRA-style GPU construction:
+     *   1. GPU builds k-NN graph
+     *   2. CPU encodes vectors
+     *   3. This method ingests the graph structure
+     *
+     * @param codes           Pre-encoded CP codes [N]
+     * @param neighbor_lists  Neighbor lists per node [N][variable size]
+     */
+    void ingest_knn_graph(const std::vector<CPCode<ComponentT, K>>& codes,
+                          const std::vector<std::vector<NodeId>>& neighbor_lists) {
+        size_t N = codes.size();
+        assert(neighbor_lists.size() == N);
+
+        // Clear and reserve
+        codes_.clear();
+        neighbor_blocks_.clear();
+        visited_markers_.clear();
+
+        codes_.reserve(N);
+        neighbor_blocks_.reserve(N);
+        visited_markers_.reserve(N);
+
+        // Add all nodes
+        for (size_t i = 0; i < N; ++i) {
+            codes_.push_back(codes[i]);
+            neighbor_blocks_.push_back(Block{});
+            visited_markers_.push_back(std::make_unique<std::atomic<uint64_t>>(0));
+        }
+
+        // Set neighbors (with code copies for Flash layout)
+        #pragma omp parallel for schedule(dynamic, 100)
+        for (size_t i = 0; i < N; ++i) {
+            const auto& neighbors = neighbor_lists[i];
+            auto& block = neighbor_blocks_[i];
+
+            size_t count = std::min(neighbors.size(), params_.M);
+            for (size_t j = 0; j < count; ++j) {
+                NodeId neighbor = neighbors[j];
+                if (neighbor < N) {
+                    block.ids[j] = neighbor;
+                    block.set_neighbor_code(j, codes_[neighbor]);
+                }
+            }
+            block.count = static_cast<uint8_t>(count);
+        }
+    }
+
+    /**
+     * Ingest from matrix format (N x k neighbor matrix).
+     *
+     * @param codes      Pre-encoded CP codes [N]
+     * @param neighbors  Neighbor matrix [N x k], row-major
+     * @param N          Number of nodes
+     * @param k          Neighbors per node (can be > M, will truncate)
+     */
+    void ingest_knn_matrix(const std::vector<CPCode<ComponentT, K>>& codes,
+                           const uint32_t* neighbors,
+                           size_t N, size_t k) {
+        assert(codes.size() == N);
+
+        // Clear and reserve
+        codes_.clear();
+        neighbor_blocks_.clear();
+        visited_markers_.clear();
+
+        codes_.reserve(N);
+        neighbor_blocks_.reserve(N);
+        visited_markers_.reserve(N);
+
+        // Add all nodes
+        for (size_t i = 0; i < N; ++i) {
+            codes_.push_back(codes[i]);
+            neighbor_blocks_.push_back(Block{});
+            visited_markers_.push_back(std::make_unique<std::atomic<uint64_t>>(0));
+        }
+
+        // Set neighbors
+        #pragma omp parallel for schedule(dynamic, 100)
+        for (size_t i = 0; i < N; ++i) {
+            auto& block = neighbor_blocks_[i];
+            const uint32_t* row = neighbors + i * k;
+
+            size_t count = 0;
+            for (size_t j = 0; j < k && count < params_.M; ++j) {
+                uint32_t neighbor = row[j];
+                if (neighbor != UINT32_MAX && neighbor < N && neighbor != i) {
+                    block.ids[count] = static_cast<NodeId>(neighbor);
+                    block.set_neighbor_code(count, codes_[neighbor]);
+                    ++count;
+                }
+            }
+            block.count = static_cast<uint8_t>(count);
+        }
+    }
+
+    /**
+     * Clear the graph (remove all nodes).
+     */
+    void clear() {
+        codes_.clear();
+        neighbor_blocks_.clear();
+        visited_markers_.clear();
+    }
+
+    /**
+     * Flash: Prefetch a neighbor block for upcoming access.
+     * Call this before processing a node's neighbors.
+     *
+     * SoA LAYOUT: codes_transposed is organized as [K][FLASH_MAX_M].
+     * We prefetch the IDs, the beginning of codes_transposed (where all component
+     * 0 values for neighbors 0-63 are), and the distances array.
+     */
+    void prefetch_neighbor_block(NodeId id) const {
+        if (id < neighbor_blocks_.size()) {
+            const auto& block = neighbor_blocks_[id];
+            // Prefetch the beginning of the block (IDs)
+            __builtin_prefetch(&block, 0, 3);  // Read, high temporal locality
+            // Prefetch start of codes_transposed (component 0 for all neighbors)
+            __builtin_prefetch(&block.codes_transposed[0][0], 0, 3);
+            // Prefetch middle of codes_transposed (around component K/2)
+            __builtin_prefetch(&block.codes_transposed[K/2][0], 0, 3);
+            // Prefetch distances array
+            __builtin_prefetch(&block.distances[0], 0, 3);
+        }
     }
 
 private:
     CPHNSWParams params_;
-    NodeId entry_point_;
-    LayerLevel top_layer_;
-    mutable Spinlock entry_lock_;  // Protects entry_point_ and top_layer_
 
-    // Flat storage
-    std::vector<CompactNode> nodes_;
-    std::vector<CPCode<ComponentT, K>> codes_;
-    std::vector<NodeId> links_pool_;
-    std::vector<float> dists_pool_;  // Parallel array: cached distance for each edge
+    // Flash memory layout storage
+    std::vector<CPCode<ComponentT, K>> codes_;              // Node's own code
+    std::vector<Block> neighbor_blocks_;                     // NeighborBlock per node
     mutable std::vector<std::unique_ptr<std::atomic<uint64_t>>> visited_markers_;
-
-    /**
-     * Compute offset in links_pool for a specific layer.
-     */
-    uint32_t get_layer_offset(const CompactNode& node, LayerLevel layer) const {
-        uint32_t offset = node.link_offset;
-
-        // Layer 0 starts at offset
-        if (layer == 0) {
-            return offset;
-        }
-
-        // Skip layer 0 (M_max0 slots)
-        offset += static_cast<uint32_t>(params_.M_max0);
-
-        // Skip intermediate layers (M slots each)
-        for (LayerLevel l = 1; l < layer; ++l) {
-            offset += static_cast<uint32_t>(params_.M);
-        }
-
-        return offset;
-    }
 };
 
 // Common graph types
 using FlatHNSWGraph8 = FlatHNSWGraph<uint8_t, 16>;
 using FlatHNSWGraph16 = FlatHNSWGraph<uint16_t, 16>;
+using FlatHNSWGraph32 = FlatHNSWGraph<uint8_t, 32>;  // K=32 for Flash optimization
 
 }  // namespace cphnsw

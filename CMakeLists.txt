@@ -97,6 +97,7 @@ endif()
 if(CPHNSW_USE_CUDA)
     add_library(cphnsw_cuda STATIC
         src/cuda/gpu_encoder.cu
+        src/cuda/gpu_knn_graph.cu
     )
     target_include_directories(cphnsw_cuda PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/include
@@ -105,6 +106,7 @@ if(CPHNSW_USE_CUDA)
         CUDA::cudart
         CUDA::cublas
     )
+    target_compile_definitions(cphnsw_cuda PUBLIC CPHNSW_USE_CUDA=1)
     set_target_properties(cphnsw_cuda PROPERTIES
         CUDA_SEPARABLE_COMPILATION ON
         POSITION_INDEPENDENT_CODE ON
@@ -176,6 +178,39 @@ if(CPHNSW_BUILD_EVAL)
         ${CMAKE_CURRENT_SOURCE_DIR}/evaluation
     )
 
+    # K-specific eval_master variants for Research Evaluation
+    foreach(K_VAL 16 32 64)
+        add_executable(eval_master_k${K_VAL}
+            evaluation/eval_master.cpp
+        )
+        target_compile_definitions(eval_master_k${K_VAL} PRIVATE EVAL_K=${K_VAL})
+        target_link_libraries(eval_master_k${K_VAL} PRIVATE cphnsw)
+        target_include_directories(eval_master_k${K_VAL} PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/include
+            ${CMAKE_CURRENT_SOURCE_DIR}/evaluation
+        )
+    endforeach()
+
+    # QA Protocol test suite
+    add_executable(qa_protocol
+        evaluation/qa_protocol.cpp
+    )
+    target_link_libraries(qa_protocol PRIVATE cphnsw)
+    target_include_directories(qa_protocol PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/evaluation
+    )
+
+    # CP Estimator Debug
+    add_executable(debug_estimator
+        evaluation/debug_estimator.cpp
+    )
+    target_link_libraries(debug_estimator PRIVATE cphnsw)
+    target_include_directories(debug_estimator PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/evaluation
+    )
+
     # GPU evaluation (SIFT-1M with CUDA acceleration)
     if(CPHNSW_USE_CUDA)
         add_executable(eval_sift_gpu
@@ -183,6 +218,56 @@ if(CPHNSW_BUILD_EVAL)
         )
         target_link_libraries(eval_sift_gpu PRIVATE cphnsw cphnsw_cuda)
         target_include_directories(eval_sift_gpu PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/include
+            ${CMAKE_CURRENT_SOURCE_DIR}/evaluation
+        )
+
+        # GPU k-NN Build test
+        add_executable(test_gpu_build
+            evaluation/test_gpu_build.cpp
+        )
+        target_link_libraries(test_gpu_build PRIVATE cphnsw cphnsw_cuda)
+        target_include_directories(test_gpu_build PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/include
+            ${CMAKE_CURRENT_SOURCE_DIR}/evaluation
+        )
+
+        # GPU k-NN Debug
+        add_executable(debug_gpu_knn
+            evaluation/debug_gpu_knn.cpp
+        )
+        target_link_libraries(debug_gpu_knn PRIVATE cphnsw cphnsw_cuda)
+        target_include_directories(debug_gpu_knn PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/include
+            ${CMAKE_CURRENT_SOURCE_DIR}/evaluation
+        )
+
+        # Code Storage Debug
+        add_executable(debug_code_storage
+            evaluation/debug_code_storage.cpp
+        )
+        target_link_libraries(debug_code_storage PRIVATE cphnsw cphnsw_cuda)
+        target_include_directories(debug_code_storage PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/include
+            ${CMAKE_CURRENT_SOURCE_DIR}/evaluation
+        )
+
+        # Recall Debug
+        add_executable(debug_recall
+            evaluation/debug_recall.cpp
+        )
+        target_link_libraries(debug_recall PRIVATE cphnsw cphnsw_cuda)
+        target_include_directories(debug_recall PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/include
+            ${CMAKE_CURRENT_SOURCE_DIR}/evaluation
+        )
+
+        # K Value Variants Test
+        add_executable(test_k_variants
+            evaluation/test_k_variants.cpp
+        )
+        target_link_libraries(test_k_variants PRIVATE cphnsw cphnsw_cuda)
+        target_include_directories(test_k_variants PRIVATE
             ${CMAKE_CURRENT_SOURCE_DIR}/include
             ${CMAKE_CURRENT_SOURCE_DIR}/evaluation
         )

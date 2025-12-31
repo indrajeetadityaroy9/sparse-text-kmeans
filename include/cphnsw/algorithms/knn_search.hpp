@@ -11,17 +11,20 @@
 namespace cphnsw {
 
 /**
- * K-NN Search Algorithm
+ * NSW K-NN Search Algorithm (Simplified for single-layer graph)
  *
- * Finds the k nearest neighbors using the HNSW hierarchy:
- * 1. Descend from top layer to layer 1 with ef=1 (greedy)
- * 2. Search layer 0 with full ef
+ * Finds the k nearest neighbors using random entry points:
+ * 1. Get k_entry random entry points
+ * 2. Search with full ef
  * 3. Return top-k results
+ *
+ * Per "Down with the Hierarchy" - random entry points work equivalently
+ * for high-dimensional data due to hub highways.
  *
  * CRITICAL: Uses asymmetric distance (weighted by query magnitudes)
  * to enable proper gradient descent in quantized space.
  *
- * Complexity: O(log N + ef * M * K)
+ * Complexity: O(ef * M * K)
  */
 template <typename ComponentT, size_t K>
 class KNNSearch {
@@ -32,14 +35,14 @@ public:
     using Encoder = CPEncoder<ComponentT, K>;
 
     /**
-     * K-NN search using asymmetric distance (recommended).
+     * NSW K-NN search using asymmetric distance.
      *
      * Uses query magnitudes for continuous gradient navigation.
      *
      * @param query       Encoded query with magnitudes
      * @param k           Number of neighbors to return
      * @param ef          Search width (ef >= k recommended)
-     * @param graph       HNSW graph
+     * @param graph       NSW graph
      * @param query_id    Starting query ID (will be incremented)
      * @return            k nearest neighbors sorted by distance
      */
@@ -50,28 +53,17 @@ public:
         const Graph& graph,
         uint64_t& query_id) {
 
-        NodeId ep = graph.entry_point();
-        if (ep == INVALID_NODE) {
+        if (graph.empty()) {
             return {};
         }
 
-        LayerLevel top_layer = graph.top_layer();
-        std::vector<NodeId> entry_points = {ep};
+        // NSW: Get random entry points
+        std::vector<NodeId> entry_points = graph.get_random_entry_points(
+            graph.params().k_entry, query_id);
 
-        // Phase 1: Descend from top layer to layer 1 with ef=1
-        for (int l = static_cast<int>(top_layer); l > 0; --l) {
-            auto results = SearchLayer<ComponentT, K>::search(
-                query, entry_points, 1, static_cast<LayerLevel>(l),
-                graph, ++query_id);
-
-            if (!results.empty()) {
-                entry_points = {results[0].id};
-            }
-        }
-
-        // Phase 2: Search layer 0 with full ef
+        // Single-layer search with full ef
         auto results = SearchLayer<ComponentT, K>::search(
-            query, entry_points, std::max(ef, k), 0, graph, ++query_id);
+            query, entry_points, std::max(ef, k), graph, ++query_id);
 
         // Return top-k
         if (results.size() > k) {
@@ -92,7 +84,7 @@ public:
      * @param k            Number of neighbors to return
      * @param ef           Search width per probe
      * @param num_probes   Number of probe sequences to try
-     * @param graph        HNSW graph
+     * @param graph        NSW graph
      * @param query_id     Starting query ID
      * @return             k nearest neighbors
      */
@@ -150,7 +142,7 @@ public:
      * @param queries      Query structs with magnitudes
      * @param k            Number of neighbors per query
      * @param ef           Search width
-     * @param graph        HNSW graph
+     * @param graph        NSW graph
      * @param query_id     Starting query ID
      * @return             Results for each query
      */

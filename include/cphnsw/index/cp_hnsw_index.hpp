@@ -6,6 +6,9 @@
 #include "../quantizer/cp_encoder.hpp"
 #include "../algorithms/insert.hpp"
 #include "../algorithms/knn_search.hpp"
+#include "../algorithms/rank_pruning.hpp"
+#include "../calibration/finger_calibration.hpp"
+#include "../calibration/calibrated_distance.hpp"
 #include <memory>
 #include <random>
 #include <atomic>
@@ -13,9 +16,14 @@
 #include <cstring>
 #include <numeric>
 #include <algorithm>
+#include <iostream>
 
 #ifdef CPHNSW_USE_OPENMP
 #include <omp.h>
+#endif
+
+#ifdef CPHNSW_USE_CUDA
+#include "../cuda/gpu_knn_graph.cuh"
 #endif
 
 namespace cphnsw {
@@ -92,12 +100,8 @@ public:
         // Encode to CPQuery (with magnitudes for asymmetric distance)
         auto query = encoder_.encode_query(vec);
 
-        // Generate level
-        LayerLevel level = Insert<ComponentT, K>::generate_level(
-            rng_, params_.m_L);
-
-        // Add node to graph (store only the code, not magnitudes)
-        NodeId id = graph_.add_node(query.primary_code, level);
+        // NSW: Add node to graph (no level generation)
+        NodeId id = graph_.add_node(query.primary_code);
 
         // ALWAYS use hybrid insert (CP search + float edge selection)
         // This achieves 100% connectivity with better performance than backbone approach
@@ -176,7 +180,7 @@ public:
         // ============================================
         CPHNSW_DEBUG_PHASE(2, "Encoding " << count << " vectors");
         std::vector<CPQuery<ComponentT, K>> queries(count);
-        std::vector<LayerLevel> levels(count);
+        // NSW: No levels needed (single-layer graph)
 
 #ifdef CPHNSW_USE_OPENMP
         #pragma omp parallel
@@ -195,9 +199,6 @@ public:
 
                 // Encode query using thread-local buffer (thread-safe!)
                 queries[i] = encoder_.encode_query_with_buffer(vec, local_buffer.data());
-
-                // Generate level from deterministic hash of id
-                levels[i] = generate_level_from_id(id, params_.m_L);
             }
         }
 #else
@@ -211,9 +212,6 @@ public:
 
             // Encode query (single-threaded, safe to use shared buffer)
             queries[i] = encoder_.encode_query(vec);
-
-            // Generate level from deterministic hash of id
-            levels[i] = generate_level_from_id(id, params_.m_L);
         }
 #endif
 
@@ -223,7 +221,7 @@ public:
         // ============================================
         CPHNSW_DEBUG_PHASE(3, "Creating " << count << " nodes");
         for (size_t i = 0; i < count; ++i) {
-            graph_.add_node(queries[i].primary_code, levels[i]);
+            graph_.add_node(queries[i].primary_code);  // NSW: no level
         }
 
         // ============================================
@@ -294,13 +292,7 @@ public:
 #else
         CPHNSW_DEBUG_PHASE(5, "Skipping connectivity repair (enable with CPHNSW_ENABLE_CONNECTIVITY_REPAIR)");
 #endif
-
-        // Update entry point if any node achieved higher level
-        for (size_t i = 0; i < count; ++i) {
-            if (levels[i] > graph_.top_layer()) {
-                graph_.set_entry_point_safe(static_cast<NodeId>(start_id + i), levels[i]);
-            }
-        }
+        // NSW: No entry point update needed (random entry points used)
     }
 
     /**
@@ -482,29 +474,29 @@ public:
     }
 
     /**
-     * Verify graph connectivity at layer 0.
-     * Returns the number of nodes reachable from entry point.
+     * NSW: Verify graph connectivity.
+     * Returns the number of nodes reachable from node 0.
      * Should equal size() for a connected graph.
      */
     size_t verify_connectivity() const {
         if (graph_.empty()) return 0;
 
-        NodeId ep = graph_.entry_point();
-        if (ep == INVALID_NODE) return 0;
+        // NSW: Start from node 0 (any node works for connectivity check)
+        NodeId start = 0;
 
-        // BFS from entry point at layer 0
+        // BFS from start node
         std::vector<bool> visited(graph_.size(), false);
         std::queue<NodeId> queue;
 
-        queue.push(ep);
-        visited[ep] = true;
+        queue.push(start);
+        visited[start] = true;
         size_t count = 1;
 
         while (!queue.empty()) {
             NodeId node = queue.front();
             queue.pop();
 
-            auto [neighbors, neighbor_count] = graph_.get_neighbors(node, 0);
+            auto [neighbors, neighbor_count] = graph_.get_neighbors(node);
 
             for (size_t i = 0; i < neighbor_count; ++i) {
                 NodeId neighbor = neighbors[i];
@@ -520,10 +512,366 @@ public:
     }
 
     /**
-     * Check if graph is fully connected at layer 0.
+     * NSW: Check if graph is fully connected.
      */
     bool is_connected() const {
         return verify_connectivity() == graph_.size();
+    }
+
+    // =========================================================================
+    // FINGER Calibration
+    // =========================================================================
+
+    /**
+     * Calibrate the index using FINGER linear regression.
+     *
+     * Fits a linear model from asymmetric distances to true cosine distances
+     * using graph edges. Should be called after building the index.
+     *
+     * @param num_samples  Number of edge pairs to sample (default 1000)
+     * @param seed         Random seed for reproducibility
+     * @return             Calibration parameters (also stored internally)
+     */
+    FINGERCalibration calibrate(size_t num_samples = 1000, uint64_t seed = 42) {
+        calibration_ = FINGERCalibrator<ComponentT, K>::calibrate(
+            graph_, original_vectors_.data(), params_.dim,
+            encoder_, num_samples, seed);
+        return calibration_;
+    }
+
+    /**
+     * Get the current calibration parameters.
+     */
+    const FINGERCalibration& get_calibration() const {
+        return calibration_;
+    }
+
+    /**
+     * Set calibration parameters directly (e.g., from saved index).
+     */
+    void set_calibration(const FINGERCalibration& calib) {
+        calibration_ = calib;
+    }
+
+    /**
+     * Check if calibration has been performed.
+     */
+    bool is_calibrated() const {
+        return calibration_.is_valid();
+    }
+
+    /**
+     * Search using FINGER calibrated distances.
+     *
+     * Uses the calibrated distance function for improved ranking.
+     * Must call calibrate() before using this method.
+     *
+     * @param query  Query vector (length >= dim)
+     * @param k      Number of neighbors to return
+     * @param ef     Search width (ef >= k recommended, 0 = auto)
+     * @return       k nearest neighbors sorted by calibrated distance
+     */
+    std::vector<SearchResult> search_calibrated(
+        const Float* query, size_t k, size_t ef = 0) const {
+
+        if (!calibration_.is_valid()) {
+            // Fall back to uncalibrated search
+            return search(query, k, ef);
+        }
+
+        if (ef == 0) {
+            ef = std::max(k, static_cast<size_t>(10));
+        }
+
+        auto q = encoder_.encode_query(query);
+        uint64_t qid = query_counter_.fetch_add(1);
+
+        // Use random entry points
+        std::vector<NodeId> entry_points = graph_.get_random_entry_points(
+            params_.k_entry, qid);
+
+        return CalibratedSearchLayer<ComponentT, K>::search(
+            q, entry_points, ef, graph_, calibration_, ++qid);
+    }
+
+    /**
+     * Search calibrated with re-ranking for maximum recall.
+     *
+     * Combines FINGER calibration with true-distance re-ranking.
+     *
+     * @param query_vec  Query vector
+     * @param k          Number of results to return
+     * @param ef         Search width (0 = auto)
+     * @param rerank_k   Number of candidates to re-rank (0 = auto)
+     * @return           Top-k results sorted by TRUE cosine distance
+     */
+    std::vector<SearchResult> search_calibrated_and_rerank(
+        const Float* query_vec,
+        size_t k,
+        size_t ef = 0,
+        size_t rerank_k = 0) const {
+
+        // Default parameters
+        if (ef == 0) ef = std::max(k * 2, static_cast<size_t>(100));
+        if (rerank_k == 0) rerank_k = std::max(k * 5, static_cast<size_t>(100));
+
+        // 1. Calibrated search for candidates
+        auto candidates = search_calibrated(query_vec, rerank_k, ef);
+
+        // 2. Re-rank with TRUE cosine distance
+#ifdef CPHNSW_USE_OPENMP
+        #pragma omp parallel for if(candidates.size() > 100)
+#endif
+        for (size_t i = 0; i < candidates.size(); ++i) {
+            NodeId id = candidates[i].id;
+            const Float* node_vec = original_vectors_.data() + id * params_.dim;
+
+            Float dot = 0;
+            for (size_t d = 0; d < params_.dim; ++d) {
+                dot += query_vec[d] * node_vec[d];
+            }
+            candidates[i].distance = -dot;
+        }
+
+        // 3. Sort and return top-k
+        if (candidates.size() > k) {
+            std::partial_sort(
+                candidates.begin(),
+                candidates.begin() + k,
+                candidates.end());
+            candidates.resize(k);
+        } else {
+            std::sort(candidates.begin(), candidates.end());
+        }
+
+        return candidates;
+    }
+
+    // =========================================================================
+    // GPU-Accelerated Construction (CAGRA-style)
+    // =========================================================================
+
+#ifdef CPHNSW_USE_CUDA
+    /**
+     * Build index using GPU-accelerated k-NN graph construction (CAGRA-style).
+     *
+     * This is the recommended method for large datasets (>100K vectors).
+     * Uses NVIDIA GPU for brute-force k-NN computation, then CPU for:
+     * - CP code encoding
+     * - Rank-based pruning (optional)
+     * - Graph ingestion with Flash layout
+     *
+     * Performance: ~100x faster than CPU insertion for large datasets.
+     *
+     * @param vectors       Input vectors (row-major, N x dim)
+     * @param N             Number of vectors
+     * @param knn_k         k for k-NN graph (typically 32-64, >= M)
+     * @param use_pruning   Apply rank-based pruning (default true)
+     * @param pruning_alpha Detour threshold for pruning (default 1.1)
+     */
+    void build_with_gpu_knn(const Float* vectors, size_t N,
+                            size_t knn_k = 32,
+                            bool use_pruning = true,
+                            float pruning_alpha = 1.1f) {
+        std::cout << "GPU k-NN Graph Construction\n";
+        std::cout << "  N = " << N << ", dim = " << params_.dim
+                  << ", k = " << knn_k << ", M = " << params_.M << std::endl;
+
+        // Store original vectors
+        original_vectors_.resize(N * params_.dim);
+        std::memcpy(original_vectors_.data(), vectors, N * params_.dim * sizeof(Float));
+
+        // ============================================
+        // PHASE 1: GPU k-NN Graph Construction
+        // ============================================
+        std::cout << "Phase 1: GPU k-NN graph construction..." << std::endl;
+
+        cuda::GPUKNNGraphBuilder builder(params_.dim, knn_k);
+
+        std::vector<uint32_t> knn_neighbors(N * knn_k);
+        std::vector<float> knn_distances(N * knn_k);
+
+        builder.build(vectors, N, knn_neighbors.data(), knn_distances.data());
+
+        std::cout << "  GPU k-NN complete." << std::endl;
+
+        // ============================================
+        // PHASE 2: CPU Encoding
+        // ============================================
+        std::cout << "Phase 2: Encoding vectors..." << std::endl;
+
+        std::vector<CPCode<ComponentT, K>> codes(N);
+
+#ifdef CPHNSW_USE_OPENMP
+        #pragma omp parallel
+        {
+            std::vector<Float> local_buffer(encoder_.padded_dim());
+
+            #pragma omp for schedule(static)
+            for (size_t i = 0; i < N; ++i) {
+                auto query = encoder_.encode_query_with_buffer(
+                    vectors + i * params_.dim, local_buffer.data());
+                codes[i] = query.primary_code;
+            }
+        }
+#else
+        for (size_t i = 0; i < N; ++i) {
+            auto query = encoder_.encode_query(vectors + i * params_.dim);
+            codes[i] = query.primary_code;
+        }
+#endif
+
+        std::cout << "  Encoding complete." << std::endl;
+
+        // ============================================
+        // PHASE 3: Rank-Based Pruning (Optional)
+        // ============================================
+        std::vector<std::vector<NodeId>> neighbor_lists;
+
+        if (use_pruning && knn_k > params_.M) {
+            std::cout << "Phase 3: Rank-based pruning (k=" << knn_k
+                      << " -> M=" << params_.M << ", alpha=" << pruning_alpha << ")..." << std::endl;
+
+            neighbor_lists = RankBasedPruning::prune_knn_graph(
+                knn_neighbors.data(), knn_distances.data(),
+                N, knn_k, params_.M,
+                vectors, params_.dim, pruning_alpha);
+
+            // Add reverse edges for bidirectional navigation
+            RankBasedPruning::add_reverse_edges(neighbor_lists, params_.M);
+
+            std::cout << "  Pruning complete." << std::endl;
+        } else {
+            std::cout << "Phase 3: Direct ingestion (no pruning)..." << std::endl;
+
+            // Convert matrix to neighbor lists
+            neighbor_lists.resize(N);
+            for (size_t i = 0; i < N; ++i) {
+                const uint32_t* row = knn_neighbors.data() + i * knn_k;
+                for (size_t j = 0; j < std::min(knn_k, params_.M); ++j) {
+                    if (row[j] != UINT32_MAX && row[j] != i) {
+                        neighbor_lists[i].push_back(static_cast<NodeId>(row[j]));
+                    }
+                }
+            }
+        }
+
+        // ============================================
+        // PHASE 4: Graph Ingestion
+        // ============================================
+        std::cout << "Phase 4: Ingesting graph..." << std::endl;
+
+        graph_.ingest_knn_graph(codes, neighbor_lists);
+
+        std::cout << "  Ingestion complete." << std::endl;
+
+        // ============================================
+        // PHASE 5: Connectivity Verification/Repair
+        // ============================================
+        std::cout << "Phase 5: Verifying connectivity..." << std::endl;
+
+        size_t connected = verify_connectivity();
+        std::cout << "  Connected: " << connected << "/" << N;
+
+        if (connected < N) {
+            std::cout << " (repairing...)" << std::endl;
+
+            // Repair using RankBasedPruning utility
+            RankBasedPruning::repair_connectivity(neighbor_lists, params_.seed);
+
+            // Re-ingest
+            graph_.ingest_knn_graph(codes, neighbor_lists);
+
+            connected = verify_connectivity();
+            std::cout << "  After repair: " << connected << "/" << N << std::endl;
+        } else {
+            std::cout << " (fully connected)" << std::endl;
+        }
+
+        std::cout << "GPU construction complete." << std::endl;
+    }
+#endif  // CPHNSW_USE_CUDA
+
+    /**
+     * Build index from pre-computed k-NN graph (CPU only).
+     *
+     * Use this when you have a k-NN graph from an external source
+     * (e.g., FAISS GPU, cuVS, or pre-computed).
+     *
+     * @param vectors       Input vectors (row-major, N x dim)
+     * @param N             Number of vectors
+     * @param knn_neighbors k-NN neighbor indices [N x k]
+     * @param knn_distances k-NN distances [N x k]
+     * @param k             Neighbors per node in k-NN
+     * @param use_pruning   Apply rank-based pruning
+     * @param pruning_alpha Detour threshold
+     */
+    void build_from_knn_graph(const Float* vectors, size_t N,
+                               const uint32_t* knn_neighbors,
+                               const float* knn_distances,
+                               size_t k,
+                               bool use_pruning = true,
+                               float pruning_alpha = 1.1f) {
+        std::cout << "Building from k-NN graph: N=" << N << ", k=" << k << std::endl;
+
+        // Store original vectors
+        original_vectors_.resize(N * params_.dim);
+        std::memcpy(original_vectors_.data(), vectors, N * params_.dim * sizeof(Float));
+
+        // Encode vectors
+        std::vector<CPCode<ComponentT, K>> codes(N);
+
+#ifdef CPHNSW_USE_OPENMP
+        #pragma omp parallel
+        {
+            std::vector<Float> local_buffer(encoder_.padded_dim());
+
+            #pragma omp for schedule(static)
+            for (size_t i = 0; i < N; ++i) {
+                auto query = encoder_.encode_query_with_buffer(
+                    vectors + i * params_.dim, local_buffer.data());
+                codes[i] = query.primary_code;
+            }
+        }
+#else
+        for (size_t i = 0; i < N; ++i) {
+            auto query = encoder_.encode_query(vectors + i * params_.dim);
+            codes[i] = query.primary_code;
+        }
+#endif
+
+        // Apply pruning if requested
+        std::vector<std::vector<NodeId>> neighbor_lists;
+
+        if (use_pruning && k > params_.M) {
+            neighbor_lists = RankBasedPruning::prune_knn_graph(
+                knn_neighbors, knn_distances, N, k, params_.M,
+                vectors, params_.dim, pruning_alpha);
+            RankBasedPruning::add_reverse_edges(neighbor_lists, params_.M);
+        } else {
+            neighbor_lists.resize(N);
+            for (size_t i = 0; i < N; ++i) {
+                const uint32_t* row = knn_neighbors + i * k;
+                for (size_t j = 0; j < std::min(k, params_.M); ++j) {
+                    if (row[j] != UINT32_MAX && row[j] != i) {
+                        neighbor_lists[i].push_back(static_cast<NodeId>(row[j]));
+                    }
+                }
+            }
+        }
+
+        // Ingest graph
+        graph_.ingest_knn_graph(codes, neighbor_lists);
+
+        // Verify and repair connectivity
+        size_t connected = verify_connectivity();
+        if (connected < N) {
+            RankBasedPruning::repair_connectivity(neighbor_lists, params_.seed);
+            graph_.ingest_knn_graph(codes, neighbor_lists);
+        }
+
+        std::cout << "Build complete. Connectivity: " << verify_connectivity()
+                  << "/" << N << std::endl;
     }
 
 private:
@@ -537,6 +885,9 @@ private:
     // Uses true cosine distance for edge selection during construction
     std::vector<Float> original_vectors_;
 
+    // FINGER calibration parameters
+    FINGERCalibration calibration_;
+
     static CPHNSWParams finalize_params(CPHNSWParams params) {
         params.finalize();
         return params;
@@ -546,8 +897,7 @@ private:
         CPHNSWParams params;
         params.dim = dim;
         params.k = K;
-        params.M = M;
-        params.M_max0 = 2 * M;
+        params.M = M;  // NSW: single layer, no M_max0 distinction
         params.ef_construction = ef_construction;
         params.keep_pruned = true;
         params.seed = 42;
@@ -557,7 +907,7 @@ private:
 
 #ifdef CPHNSW_ENABLE_CONNECTIVITY_REPAIR
     /**
-     * Repair connectivity by connecting isolated components.
+     * NSW: Repair connectivity by connecting isolated components.
      *
      * After parallel construction, some nodes may be disconnected due to
      * blind spots. This pass finds those nodes and connects them to the
@@ -569,23 +919,21 @@ private:
                             const std::vector<CPQuery<ComponentT, K>>& /* queries */,
                             const Float* vecs) {
         if (count == 0) return;
-
-        NodeId ep = graph_.entry_point();
-        if (ep == INVALID_NODE) return;
+        if (graph_.empty()) return;
 
         size_t dim = params_.dim;
 
-        // Find disconnected nodes via BFS from entry point
+        // NSW: Find disconnected nodes via BFS from node 0
         std::vector<bool> visited(graph_.size(), false);
         std::queue<NodeId> bfs_queue;
-        bfs_queue.push(ep);
-        visited[ep] = true;
+        bfs_queue.push(0);
+        visited[0] = true;
 
         while (!bfs_queue.empty()) {
             NodeId node = bfs_queue.front();
             bfs_queue.pop();
 
-            auto [neighbors, neighbor_count] = graph_.get_neighbors(node, 0);
+            auto [neighbors, neighbor_count] = graph_.get_neighbors(node);
             for (size_t i = 0; i < neighbor_count; ++i) {
                 NodeId neighbor = neighbors[i];
                 if (neighbor != INVALID_NODE && !visited[neighbor]) {
@@ -638,14 +986,14 @@ private:
                 NodeId best_neighbor = candidates[0].second;
                 const Float* neighbor_vec = original_vectors_.data() + best_neighbor * dim;
 
-                // Add edge from disconnected node to neighbor (should succeed)
-                graph_.add_neighbor_safe(disc_id, 0, best_neighbor);
+                // NSW: Add edge from disconnected node to neighbor
+                graph_.add_neighbor_safe(disc_id, best_neighbor);
 
                 // Force add reverse edge (may need to replace worst neighbor)
-                bool added = graph_.add_neighbor_safe(best_neighbor, 0, disc_id);
+                bool added = graph_.add_neighbor_safe(best_neighbor, disc_id);
                 if (!added) {
                     // Force connection by replacing worst neighbor
-                    auto [neighbors, neighbor_count] = graph_.get_neighbors(best_neighbor, 0);
+                    auto [neighbors, neighbor_count] = graph_.get_neighbors(best_neighbor);
                     std::vector<std::pair<Float, NodeId>> neighbor_dists;
 
                     for (size_t i = 0; i < neighbor_count; ++i) {
@@ -666,9 +1014,9 @@ private:
                     }
                     neighbor_dists.push_back({-dot_disc, disc_id});
 
-                    // Sort and keep best M_max0
+                    // NSW: Sort and keep best M
                     std::sort(neighbor_dists.begin(), neighbor_dists.end());
-                    size_t new_count = std::min(neighbor_dists.size(), params_.M_max0);
+                    size_t new_count = std::min(neighbor_dists.size(), params_.M);
 
                     std::vector<NodeId> new_neighbors;
                     new_neighbors.reserve(new_count);
@@ -676,7 +1024,7 @@ private:
                         new_neighbors.push_back(neighbor_dists[i].second);
                     }
 
-                    graph_.set_neighbors_safe(best_neighbor, 0, new_neighbors);
+                    graph_.set_neighbors_safe(best_neighbor, new_neighbors);
                 }
 
                 visited[disc_id] = true;  // Now connected
@@ -685,35 +1033,13 @@ private:
     }
 #endif  // CPHNSW_ENABLE_CONNECTIVITY_REPAIR
 
-    /**
-     * Generate level from node ID (deterministic, thread-safe).
-     *
-     * Uses hash-based random for reproducible parallel construction.
-     */
-    static LayerLevel generate_level_from_id(NodeId id, double m_L,
-                                             LayerLevel max_level = 15) {
-        // Simple hash mixing for pseudo-random behavior
-        uint64_t hash = id * 0x9e3779b97f4a7c15ULL;
-        hash ^= hash >> 33;
-        hash *= 0xc4ceb9fe1a85ec53ULL;
-
-        // Convert to uniform [0, 1)
-        double r = static_cast<double>(hash & 0x7FFFFFFFFFFFFFFFULL) /
-                   static_cast<double>(0x8000000000000000ULL);
-
-        // Avoid log(0)
-        if (r < 1e-10) r = 1e-10;
-
-        LayerLevel level = static_cast<LayerLevel>(
-            std::floor(-std::log(r) * m_L));
-
-        return std::min(level, max_level);
-    }
+    // NOTE: generate_level_from_id() removed for NSW flatten (no hierarchy)
 };
 
 // Common index types
 using CPHNSWIndex8 = CPHNSWIndex<uint8_t, 16>;    // For d <= 128
 using CPHNSWIndex16 = CPHNSWIndex<uint16_t, 16>;  // For d > 128
 using CPHNSWIndex32 = CPHNSWIndex<uint8_t, 32>;   // Higher precision
+using CPHNSWIndex64 = CPHNSWIndex<uint8_t, 64>;   // Highest precision
 
 }  // namespace cphnsw

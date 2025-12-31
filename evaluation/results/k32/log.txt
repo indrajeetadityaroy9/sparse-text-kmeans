@@ -1,0 +1,113 @@
+=== CP-HNSW Master Evaluation Protocol ===
+
+OpenMP: Enabled (max threads: 52)
+AVX-512: Disabled
+Output directory: results//k32
+
+Loading SIFT-1M from: ./data/sift
+  Loaded 1000000 base vectors, 10000 queries, dim=128
+
+=== Experiment 1: Recall vs QPS (Money Plot) ===
+
+Building CP-HNSW index (M=32, K=32, ef_c=200)...
+Build time: 51.12s (19561 vec/s)
+Connectivity: 989007/1000000
+
+        ef   Recall@10         QPS  Latency(us)
+------------------------------------------------
+
+[Mode: CPU Search Only]
+        10      0.1931       15575          64.2
+        20      0.2149       10634          94.0
+        40      0.2245        6611         151.3
+        80      0.2290        4203         237.9
+       100      0.2299        3618         276.4
+       200      0.2306        2047         488.6
+       400      0.2306        1119         893.6
+
+[Mode: CPU Search + CPU Rerank]
+        10      0.4612        5388         185.6 (rerank_k=50)
+        20      0.4620        5104         195.9 (rerank_k=50)
+        40      0.4618        5289         189.1 (rerank_k=50)
+        80      0.4701        3988         250.7 (rerank_k=50)
+       100      0.4731        3281         304.8 (rerank_k=50)
+       200      0.4750        1908         524.1 (rerank_k=50)
+       400      0.4756        1089         918.1 (rerank_k=50)
+        10      0.5785        3139         318.6 (rerank_k=100)
+        20      0.5785        3134         319.1 (rerank_k=100)
+        40      0.5784        3040         329.0 (rerank_k=100)
+        80      0.5785        3021         331.0 (rerank_k=100)
+       100      0.5783        3171         315.3 (rerank_k=100)
+       200      0.5851        1833         545.6 (rerank_k=100)
+       400      0.5869        1051         951.4 (rerank_k=100)
+        10      0.6814         711        1406.1 (rerank_k=200)
+        20      0.6813         660        1516.0 (rerank_k=200)
+        40      0.6814         690        1450.1 (rerank_k=200)
+        80      0.6814         737        1357.4 (rerank_k=200)
+       100      0.6811         647        1544.4 (rerank_k=200)
+       200      0.6812         692        1444.3 (rerank_k=200)
+       400      0.6856         494        2022.6 (rerank_k=200)
+
+Results saved to: results//k32/exp1_recall_qps/cphnsw_results.csv
+
+=== Experiment 2: Build Scalability ===
+
+   Threads    Build Time    Throughput   Speedup Connectivity
+--------------------------------------------------------------
+         1        464.07s          2155      1.00x          91.6%
+         4        118.54s          8436      3.92x          96.4%
+         8         63.27s         15806      7.34x          97.8%
+        16         34.41s         29064     13.49x          98.6%
+        32         27.26s         36679     17.02x          98.8%
+        52         26.17s         38211     17.73x          99.0%
+
+Results saved to: results//k32/exp2_scalability/thread_scaling.csv
+
+=== Experiment 3: Topology Ablation (Why Hybrid?) ===
+
+Running ablation on first 100000 vectors
+
+      Edge Selection    ConnectivityGraph Recall@10
+----------------------------------------------------
+         True_Cosine            99.2%          0.1025
+
+Note: Pure CP edge selection requires code modifications.
+Expected results based on prior experiments:
+       CP_Asymmetric            ~67%          ~0.13
+        CP_Symmetric            ~48%          ~0.05
+
+Results saved to: results//k32/exp3_ablation/topology_comparison.csv
+
+=== Experiment 4: Estimator Correlation ===
+
+        Dataset     Dim       K  Pearson r
+-------------------------------------------
+        SIFT-1M     128      16      0.9714
+        SIFT-1M     128      32      0.9715
+
+Results saved to: results//k32/exp4_correlation/correlation_data.csv
+
+=== Experiment 5: Memory Footprint ===
+
+           Component          Bytes       MB
+---------------------------------------------
+     Codes (K bytes)       32000000      30.5
+            Metadata       24000000      22.9
+               Edges      448000000     427.2
+    Original Vectors      512000000     488.3
+---------------------------------------------
+          Index Only      504000000     480.7
+   With Orig Vectors     1016000000     968.9
+      RSS (measured)              0       0.0
+
+--- Faiss HNSW (Theoretical) ---
+       Faiss Vectors      512000000     488.3
+         Faiss Edges      896000000     854.5
+         Faiss Total     1408000000    1342.8
+
+Compression ratio (index only): 2.8x
+
+Results saved to: results//k32/exp5_memory/memory_breakdown.csv
+
+=== Evaluation Complete ===
+Results saved to: results//k32/

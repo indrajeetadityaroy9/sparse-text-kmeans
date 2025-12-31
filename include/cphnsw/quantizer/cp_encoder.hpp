@@ -160,12 +160,20 @@ public:
      * Encode vector to Cross-Polytope code using provided buffer.
      * Thread-safe: Uses caller-provided buffer instead of shared member.
      *
+     * RABITQ-STYLE: Now stores quantized magnitudes for each rotation.
+     * The magnitude scale is sqrt(K) to normalize expected sum to ~1.0.
+     *
      * @param vec     Input vector (length >= dim_)
      * @param buffer  Work buffer (length >= padded_dim_)
-     * @return        Encoded CPCode
+     * @return        Encoded CPCode with magnitudes
      */
     CPCode<ComponentT, K> encode_with_buffer(const Float* vec, Float* buffer) const {
         CPCode<ComponentT, K> code;
+
+        // Magnitude scaling: FHT without normalization produces magnitudes ~300-500
+        // For d=128 with 3-layer rotation chain, typical max is sqrt(d) * constant
+        // Scale to fit in uint8_t (0-255) without clipping
+        constexpr float MAG_SCALE = 0.5f;  // 500 * 0.5 = 250, fits in uint8
 
         for (size_t r = 0; r < K; ++r) {
             // Apply rotation to copy
@@ -180,6 +188,9 @@ public:
             // sign_bit = 1 if negative, 0 if positive
             bool is_negative = (buffer[max_idx] < 0);
             code.components[r] = CPCode<ComponentT, K>::encode(max_idx, is_negative);
+
+            // Store quantized magnitude (RaBitQ-style)
+            code.magnitudes[r] = CPCode<ComponentT, K>::quantize_magnitude(max_abs, MAG_SCALE);
         }
 
         return code;
@@ -190,7 +201,9 @@ public:
      *
      * This is the PRIMARY encoding method for search queries.
      * Stores the full rotated vectors to enable accurate dot product reconstruction:
-     *   Score = sum_r( sign_r * rotated_vec[r][index_r] )
+     *   Score = sum_r( sign_r * rotated_vec[r][index_r] * node_mag[r] )
+     *
+     * RABITQ-STYLE: Also stores quantized magnitudes in primary_code.
      *
      * @param vec   Input vector (length >= dim_)
      * @return      CPQuery with code and rotated vectors
@@ -198,6 +211,9 @@ public:
     CPQuery<ComponentT, K> encode_query(const Float* vec) const {
         CPQuery<ComponentT, K> query;
         size_t pdim = rotation_chain_.padded_dim();
+
+        // Same magnitude scale as encode_with_buffer
+        constexpr float MAG_SCALE = 0.5f;
 
         for (size_t r = 0; r < K; ++r) {
             // Apply rotation
@@ -217,7 +233,11 @@ public:
             query.primary_code.components[r] =
                 CPCode<ComponentT, K>::encode(max_idx, is_negative);
 
-            // Store magnitude for multiprobe ranking
+            // Store quantized magnitude in code (RaBitQ-style)
+            query.primary_code.magnitudes[r] =
+                CPCode<ComponentT, K>::quantize_magnitude(max_abs, MAG_SCALE);
+
+            // Store float magnitude for multiprobe ranking
             query.magnitudes[r] = max_abs;
             query.original_indices[r] = static_cast<uint32_t>(max_idx);
         }
@@ -231,6 +251,8 @@ public:
      *
      * CRITICAL: Use this method in parallel construction to avoid data corruption.
      *
+     * RABITQ-STYLE: Also stores quantized magnitudes in primary_code.
+     *
      * @param vec     Input vector (length >= dim_)
      * @param buffer  Work buffer (length >= padded_dim())
      * @return        CPQuery with code and rotated vectors
@@ -238,6 +260,9 @@ public:
     CPQuery<ComponentT, K> encode_query_with_buffer(const Float* vec, Float* buffer) const {
         CPQuery<ComponentT, K> query;
         size_t pdim = rotation_chain_.padded_dim();
+
+        // Same magnitude scale as encode_with_buffer
+        constexpr float MAG_SCALE = 0.5f;
 
         for (size_t r = 0; r < K; ++r) {
             // Apply rotation to caller-provided buffer (thread-safe)
@@ -257,7 +282,11 @@ public:
             query.primary_code.components[r] =
                 CPCode<ComponentT, K>::encode(max_idx, is_negative);
 
-            // Store magnitude for multiprobe ranking
+            // Store quantized magnitude in code (RaBitQ-style)
+            query.primary_code.magnitudes[r] =
+                CPCode<ComponentT, K>::quantize_magnitude(max_abs, MAG_SCALE);
+
+            // Store float magnitude for multiprobe ranking
             query.magnitudes[r] = max_abs;
             query.original_indices[r] = static_cast<uint32_t>(max_idx);
         }

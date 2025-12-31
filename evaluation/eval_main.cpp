@@ -120,6 +120,93 @@ int main(int argc, char** argv) {
                   << "\n";
     }
 
+    // Test FINGER calibration
+    std::cout << "\nTesting FINGER Calibration:\n";
+    std::cout << std::string(40, '-') << "\n";
+
+    timer.start();
+    auto calib = index.calibrate(1000, 42);
+    double calib_time = timer.elapsed_ms();
+
+    std::cout << "  Calibration completed in " << std::fixed << std::setprecision(2)
+              << calib_time << " ms\n";
+    std::cout << "  Alpha: " << std::fixed << std::setprecision(4) << calib.alpha << "\n";
+    std::cout << "  Beta: " << std::fixed << std::setprecision(4) << calib.beta << "\n";
+    std::cout << "  R²: " << std::fixed << std::setprecision(4) << calib.r_squared << "\n";
+    std::cout << "  Samples: " << calib.num_samples << "\n\n";
+
+    // Compare calibrated vs uncalibrated search
+    std::cout << "Calibrated vs Uncalibrated (ef=100):\n";
+    std::cout << std::setw(16) << "Method" << std::setw(12) << "Recall@" << k
+              << std::setw(12) << "QPS\n";
+    std::cout << std::string(40, '-') << "\n";
+
+    // Uncalibrated
+    {
+        std::vector<double> latencies;
+        latencies.reserve(num_queries);
+        double total_recall = 0.0;
+
+        for (size_t q = 0; q < num_queries; ++q) {
+            const Float* query = dataset.get_query(q);
+            timer.start();
+            auto results = index.search(query, k, 100);
+            latencies.push_back(timer.elapsed_us());
+            total_recall += compute_recall(results, dataset.ground_truth[q], k);
+        }
+
+        double avg_recall = total_recall / static_cast<double>(num_queries);
+        auto qps_stats = compute_qps_stats(latencies);
+        std::cout << std::setw(16) << "Uncalibrated"
+                  << std::setw(12) << std::fixed << std::setprecision(4) << avg_recall
+                  << std::setw(12) << std::fixed << std::setprecision(0) << qps_stats.qps
+                  << "\n";
+    }
+
+    // Calibrated
+    {
+        std::vector<double> latencies;
+        latencies.reserve(num_queries);
+        double total_recall = 0.0;
+
+        for (size_t q = 0; q < num_queries; ++q) {
+            const Float* query = dataset.get_query(q);
+            timer.start();
+            auto results = index.search_calibrated(query, k, 100);
+            latencies.push_back(timer.elapsed_us());
+            total_recall += compute_recall(results, dataset.ground_truth[q], k);
+        }
+
+        double avg_recall = total_recall / static_cast<double>(num_queries);
+        auto qps_stats = compute_qps_stats(latencies);
+        std::cout << std::setw(16) << "Calibrated"
+                  << std::setw(12) << std::fixed << std::setprecision(4) << avg_recall
+                  << std::setw(12) << std::fixed << std::setprecision(0) << qps_stats.qps
+                  << "\n";
+    }
+
+    // Calibrated + Rerank
+    {
+        std::vector<double> latencies;
+        latencies.reserve(num_queries);
+        double total_recall = 0.0;
+
+        for (size_t q = 0; q < num_queries; ++q) {
+            const Float* query = dataset.get_query(q);
+            timer.start();
+            auto results = index.search_calibrated_and_rerank(query, k, 100, 50);
+            latencies.push_back(timer.elapsed_us());
+            total_recall += compute_recall(results, dataset.ground_truth[q], k);
+        }
+
+        double avg_recall = total_recall / static_cast<double>(num_queries);
+        auto qps_stats = compute_qps_stats(latencies);
+        std::cout << std::setw(16) << "Calib+Rerank"
+                  << std::setw(12) << std::fixed << std::setprecision(4) << avg_recall
+                  << std::setw(12) << std::fixed << std::setprecision(0) << qps_stats.qps
+                  << "\n";
+    }
+
     std::cout << "\nEvaluation complete.\n";
 
     return 0;

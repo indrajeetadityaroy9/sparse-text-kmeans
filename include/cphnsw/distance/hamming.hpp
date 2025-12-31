@@ -587,21 +587,14 @@ inline AsymmetricDist asymmetric_distance<uint8_t, 32>(
 /**
  * Computes asymmetric distance for HNSW navigation.
  *
- * Returns NEGATIVE of reconstructed dot product.
- * Lower value = more similar (compatible with HNSW min-heaps).
+ * Uses the query's rotated vectors and the node's CP code to estimate
+ * the dot product. This is more accurate than symmetric Hamming distance
+ * because it uses continuous query values rather than discretized codes.
  *
- * Formula: distance = -Σᵣ sign_r × query.rotated_vecs[r][node.index_r]
+ * Formula: distance = -Σᵣ sign_r × query.rotated_vecs[r][idx_r]
  *
- * THE KEY INSIGHT: The node's code tells us which axis it lies closest to
- * in the rotated space. We use the query's actual value at that axis
- * to estimate the dot product.
- *
- * For each rotation r:
- *   - Node code encodes (index_r, sign_r) meaning "I'm closest to sign_r * e_{index_r}"
- *   - Query has full rotated vector y_r
- *   - Contribution to dot product: sign_r * y_r[index_r]
- *
- * This is an UNBIASED ESTIMATOR of the cosine similarity!
+ * The node's CP code encodes: argmax_r |rotated_n[r]| and its sign.
+ * We look up the query's value at that same index and weight by sign.
  *
  * CRITICAL: Returns negative score to convert MIPS to Min-Distance.
  *           This allows HNSW's min-heap navigation to work correctly.
@@ -636,7 +629,11 @@ inline AsymmetricDist asymmetric_search_distance(
 }
 
 /**
- * SIMD-optimized asymmetric search distance for K=16, uint8_t.
+ * Scalar specialization of asymmetric search distance for K=16, uint8_t.
+ *
+ * NOTE: This is a SCALAR implementation with inline decode optimization.
+ * True SIMD vectorization of the score accumulation is not feasible here
+ * because each rotation requires a different index lookup into rotated_vecs.
  */
 #if CPHNSW_HAS_AVX2
 template <>
@@ -646,7 +643,7 @@ inline AsymmetricDist asymmetric_search_distance<uint8_t, 16>(
 
     float score = 0.0f;
 
-    // Process all 16 rotations
+    // Process all 16 rotations (scalar - index lookups prevent SIMD)
     for (size_t r = 0; r < 16; ++r) {
         uint8_t raw = node_code.components[r];
         size_t idx = raw >> 1;           // Upper 7 bits = index
@@ -661,7 +658,11 @@ inline AsymmetricDist asymmetric_search_distance<uint8_t, 16>(
 #endif
 
 /**
- * SIMD-optimized asymmetric search distance for K=32, uint8_t.
+ * Scalar specialization of asymmetric search distance for K=32, uint8_t.
+ *
+ * NOTE: This is a SCALAR implementation with inline decode optimization.
+ * True SIMD vectorization of the score accumulation is not feasible here
+ * because each rotation requires a different index lookup into rotated_vecs.
  */
 #if CPHNSW_HAS_AVX2
 template <>
@@ -671,9 +672,578 @@ inline AsymmetricDist asymmetric_search_distance<uint8_t, 32>(
 
     float score = 0.0f;
 
-    // Process all 32 rotations
+    // Process all 32 rotations (scalar - index lookups prevent SIMD)
     for (size_t r = 0; r < 32; ++r) {
         uint8_t raw = node_code.components[r];
+        size_t idx = raw >> 1;
+        bool is_negative = raw & 1;
+
+        float val = query.rotated_vecs[r][idx];
+        score += is_negative ? -val : val;
+    }
+
+    return -score;
+}
+#endif
+
+/**
+ * AVX-512 specialization of asymmetric search distance for K=64, uint8_t.
+ * Processes 64 rotations with loop unrolling for better ILP.
+ */
+#if CPHNSW_HAS_AVX512
+template <>
+inline AsymmetricDist asymmetric_search_distance<uint8_t, 64>(
+    const CPQuery<uint8_t, 64>& query,
+    const CPCode<uint8_t, 64>& node_code) {
+
+    float score = 0.0f;
+
+    // Process all 64 rotations with 4x unrolling for better ILP
+    for (size_t r = 0; r < 64; r += 4) {
+        for (size_t i = 0; i < 4; ++i) {
+            uint8_t raw = node_code.components[r + i];
+            size_t idx = raw >> 1;
+            bool is_negative = raw & 1;
+            float val = query.rotated_vecs[r + i][idx];
+            score += is_negative ? -val : val;
+        }
+    }
+
+    return -score;
+}
+#endif
+
+// ============================================================================
+// Flash Layout: SIMD Batch Distance Computation (SoA Transposed)
+// ============================================================================
+
+/**
+ * SIMD Batch Asymmetric Search Distance using SoA Transposed Layout.
+ *
+ * This is the KEY OPTIMIZATION that enables true SIMD parallelism for
+ * asymmetric distance computation. By transposing the code layout to SoA,
+ * we can process multiple neighbors in parallel.
+ *
+ * Algorithm (for 8 neighbors at once):
+ *   scores[0..7] = 0
+ *   for k in 0..K-1:
+ *       raw_bytes[0..7] = block.codes_transposed[k][0..7]  // CONTIGUOUS load!
+ *       indices[0..7] = raw_bytes >> 1
+ *       signs[0..7] = raw_bytes & 1
+ *       vals[0..7] = gather(query.rotated_vecs[k], indices)
+ *       scores[0..7] += signs ? -vals : vals
+ *   distances[0..7] = -scores
+ *
+ * @param query              Query with rotated vectors
+ * @param codes_transposed   Pointer to transposed codes [K][num_neighbors]
+ * @param num_neighbors      Number of neighbors to process
+ * @param out_distances      Output array (must have num_neighbors elements)
+ */
+
+// Forward declaration for NeighborBlock template
+template <typename ComponentT, size_t K> struct NeighborBlock;
+
+/**
+ * Scalar fallback for batch distance with SoA layout.
+ */
+template <typename ComponentT, size_t K>
+inline void asymmetric_search_distance_batch_soa(
+    const CPQuery<ComponentT, K>& query,
+    const ComponentT codes_transposed[K][64],  // K rows, up to 64 neighbors
+    size_t num_neighbors,
+    AsymmetricDist* out_distances) {
+
+    for (size_t n = 0; n < num_neighbors; ++n) {
+        float score = 0.0f;
+
+        for (size_t k = 0; k < K; ++k) {
+            ComponentT raw = codes_transposed[k][n];
+            size_t idx = CPCode<ComponentT, K>::decode_index(raw);
+            bool is_negative = CPCode<ComponentT, K>::decode_sign_negative(raw);
+
+            float val = query.rotated_vecs[k][idx];
+            score += is_negative ? -val : val;
+        }
+
+        out_distances[n] = -score;
+    }
+}
+
+// ============================================================================
+// AVX2 SIMD Batch Implementation (8 neighbors at once)
+// ============================================================================
+
+#if CPHNSW_HAS_AVX2
+
+/**
+ * AVX2 SIMD batch distance for K=32, uint8_t - processes 8 neighbors at once.
+ *
+ * Uses _mm256_i32gather_ps for parallel lookups into rotated_vecs.
+ * Expected speedup: 3-5x over scalar.
+ */
+inline void asymmetric_search_distance_batch_soa_avx2_8(
+    const CPQuery<uint8_t, 32>& query,
+    const uint8_t codes_transposed[32][64],
+    size_t start_idx,
+    float* out_distances) {  // Output for 8 distances
+
+    // Accumulator for 8 scores
+    __m256 scores = _mm256_setzero_ps();
+
+    // Process all 32 rotations
+    for (size_t k = 0; k < 32; ++k) {
+        // 1. Load 8 bytes contiguously: codes_transposed[k][start_idx..start_idx+7]
+        __m128i raw_bytes_128 = _mm_loadl_epi64(
+            reinterpret_cast<const __m128i*>(&codes_transposed[k][start_idx]));
+
+        // 2. Zero-extend 8 bytes to 8 x 32-bit integers
+        __m256i raw_32 = _mm256_cvtepu8_epi32(raw_bytes_128);
+
+        // 3. Extract indices (raw >> 1) and signs (raw & 1)
+        __m256i indices = _mm256_srli_epi32(raw_32, 1);
+        __m256i signs = _mm256_and_si256(raw_32, _mm256_set1_epi32(1));
+
+        // 4. Gather values from query.rotated_vecs[k]
+        // Base address for this rotation's vector
+        const float* base = query.rotated_vecs[k].data();
+        __m256 vals = _mm256_i32gather_ps(base, indices, 4);  // scale = 4 (sizeof float)
+
+        // 5. Apply signs: if sign bit is 1, negate the value
+        // Create mask: -1.0f where sign=1, +1.0f where sign=0
+        __m256 sign_mask = _mm256_castsi256_ps(
+            _mm256_slli_epi32(signs, 31));  // Move sign bit to MSB position
+        // XOR with vals to flip sign where needed (IEEE 754 sign bit flip)
+        vals = _mm256_xor_ps(vals, sign_mask);
+
+        // 6. Accumulate
+        scores = _mm256_add_ps(scores, vals);
+    }
+
+    // 7. Negate scores for min-heap compatibility and store
+    __m256 neg_scores = _mm256_xor_ps(scores,
+        _mm256_set1_ps(-0.0f));  // Flip sign bit
+    _mm256_storeu_ps(out_distances, neg_scores);
+}
+
+/**
+ * AVX2 batch wrapper that processes neighbors in groups of 8.
+ */
+template <>
+inline void asymmetric_search_distance_batch_soa<uint8_t, 32>(
+    const CPQuery<uint8_t, 32>& query,
+    const uint8_t codes_transposed[32][64],
+    size_t num_neighbors,
+    AsymmetricDist* out_distances) {
+
+    size_t n = 0;
+
+    // Process 8 neighbors at a time
+    for (; n + 8 <= num_neighbors; n += 8) {
+        asymmetric_search_distance_batch_soa_avx2_8(
+            query, codes_transposed, n, out_distances + n);
+    }
+
+    // Handle remaining neighbors (scalar fallback)
+    for (; n < num_neighbors; ++n) {
+        float score = 0.0f;
+        for (size_t k = 0; k < 32; ++k) {
+            uint8_t raw = codes_transposed[k][n];
+            size_t idx = raw >> 1;
+            bool is_negative = raw & 1;
+            float val = query.rotated_vecs[k][idx];
+            score += is_negative ? -val : val;
+        }
+        out_distances[n] = -score;
+    }
+}
+
+/**
+ * K=16 version
+ */
+inline void asymmetric_search_distance_batch_soa_avx2_8_k16(
+    const CPQuery<uint8_t, 16>& query,
+    const uint8_t codes_transposed[16][64],
+    size_t start_idx,
+    float* out_distances) {
+
+    __m256 scores = _mm256_setzero_ps();
+
+    for (size_t k = 0; k < 16; ++k) {
+        __m128i raw_bytes_128 = _mm_loadl_epi64(
+            reinterpret_cast<const __m128i*>(&codes_transposed[k][start_idx]));
+        __m256i raw_32 = _mm256_cvtepu8_epi32(raw_bytes_128);
+        __m256i indices = _mm256_srli_epi32(raw_32, 1);
+        __m256i signs = _mm256_and_si256(raw_32, _mm256_set1_epi32(1));
+
+        const float* base = query.rotated_vecs[k].data();
+        __m256 vals = _mm256_i32gather_ps(base, indices, 4);
+
+        __m256 sign_mask = _mm256_castsi256_ps(_mm256_slli_epi32(signs, 31));
+        vals = _mm256_xor_ps(vals, sign_mask);
+        scores = _mm256_add_ps(scores, vals);
+    }
+
+    __m256 neg_scores = _mm256_xor_ps(scores, _mm256_set1_ps(-0.0f));
+    _mm256_storeu_ps(out_distances, neg_scores);
+}
+
+template <>
+inline void asymmetric_search_distance_batch_soa<uint8_t, 16>(
+    const CPQuery<uint8_t, 16>& query,
+    const uint8_t codes_transposed[16][64],
+    size_t num_neighbors,
+    AsymmetricDist* out_distances) {
+
+    size_t n = 0;
+    for (; n + 8 <= num_neighbors; n += 8) {
+        asymmetric_search_distance_batch_soa_avx2_8_k16(
+            query, codes_transposed, n, out_distances + n);
+    }
+    for (; n < num_neighbors; ++n) {
+        float score = 0.0f;
+        for (size_t k = 0; k < 16; ++k) {
+            uint8_t raw = codes_transposed[k][n];
+            size_t idx = raw >> 1;
+            bool is_negative = raw & 1;
+            float val = query.rotated_vecs[k][idx];
+            score += is_negative ? -val : val;
+        }
+        out_distances[n] = -score;
+    }
+}
+
+#endif  // CPHNSW_HAS_AVX2
+
+// ============================================================================
+// AVX-512 SIMD Batch Implementation (16 neighbors at once)
+// ============================================================================
+
+#if CPHNSW_HAS_AVX512
+
+/**
+ * AVX-512 SIMD batch distance for K=32 - processes 16 neighbors at once.
+ *
+ * Uses _mm512_i32gather_ps for parallel lookups.
+ * Expected speedup: 5-8x over scalar.
+ */
+inline void asymmetric_search_distance_batch_soa_avx512_16(
+    const CPQuery<uint8_t, 32>& query,
+    const uint8_t codes_transposed[32][64],
+    size_t start_idx,
+    float* out_distances) {
+
+    __m512 scores = _mm512_setzero_ps();
+
+    for (size_t k = 0; k < 32; ++k) {
+        // Load 16 bytes contiguously
+        __m128i raw_bytes = _mm_loadu_si128(
+            reinterpret_cast<const __m128i*>(&codes_transposed[k][start_idx]));
+
+        // Zero-extend 16 bytes to 16 x 32-bit integers
+        __m512i raw_32 = _mm512_cvtepu8_epi32(raw_bytes);
+
+        // Extract indices and signs
+        __m512i indices = _mm512_srli_epi32(raw_32, 1);
+        __m512i signs = _mm512_and_si512(raw_32, _mm512_set1_epi32(1));
+
+        // Gather values
+        const float* base = query.rotated_vecs[k].data();
+        __m512 vals = _mm512_i32gather_ps(indices, base, 4);
+
+        // Apply signs
+        __m512 sign_mask = _mm512_castsi512_ps(_mm512_slli_epi32(signs, 31));
+        vals = _mm512_xor_ps(vals, sign_mask);
+
+        scores = _mm512_add_ps(scores, vals);
+    }
+
+    // Negate and store
+    __m512 neg_scores = _mm512_xor_ps(scores, _mm512_set1_ps(-0.0f));
+    _mm512_storeu_ps(out_distances, neg_scores);
+}
+
+/**
+ * AVX-512 batch wrapper for K=32.
+ */
+inline void asymmetric_search_distance_batch_soa_avx512(
+    const CPQuery<uint8_t, 32>& query,
+    const uint8_t codes_transposed[32][64],
+    size_t num_neighbors,
+    AsymmetricDist* out_distances) {
+
+    size_t n = 0;
+
+    // Process 16 neighbors at a time
+    for (; n + 16 <= num_neighbors; n += 16) {
+        asymmetric_search_distance_batch_soa_avx512_16(
+            query, codes_transposed, n, out_distances + n);
+    }
+
+    // Handle remaining with AVX2 (8 at a time)
+#if CPHNSW_HAS_AVX2
+    for (; n + 8 <= num_neighbors; n += 8) {
+        asymmetric_search_distance_batch_soa_avx2_8(
+            query, codes_transposed, n, out_distances + n);
+    }
+#endif
+
+    // Scalar remainder
+    for (; n < num_neighbors; ++n) {
+        float score = 0.0f;
+        for (size_t k = 0; k < 32; ++k) {
+            uint8_t raw = codes_transposed[k][n];
+            size_t idx = raw >> 1;
+            bool is_negative = raw & 1;
+            float val = query.rotated_vecs[k][idx];
+            score += is_negative ? -val : val;
+        }
+        out_distances[n] = -score;
+    }
+}
+
+/**
+ * AVX-512 SIMD batch distance for K=64 - processes 16 neighbors at once.
+ * Uses _mm512_i32gather_ps for parallel lookups into rotated_vecs.
+ */
+inline void asymmetric_search_distance_batch_soa_avx512_16_k64(
+    const CPQuery<uint8_t, 64>& query,
+    const uint8_t codes_transposed[64][64],
+    size_t start_idx,
+    float* out_distances) {
+
+    __m512 scores = _mm512_setzero_ps();
+
+    for (size_t k = 0; k < 64; ++k) {
+        // Load 16 bytes contiguously
+        __m128i raw_bytes = _mm_loadu_si128(
+            reinterpret_cast<const __m128i*>(&codes_transposed[k][start_idx]));
+
+        // Zero-extend 16 bytes to 16 x 32-bit integers
+        __m512i raw_32 = _mm512_cvtepu8_epi32(raw_bytes);
+
+        // Extract indices and signs
+        __m512i indices = _mm512_srli_epi32(raw_32, 1);
+        __m512i signs = _mm512_and_si512(raw_32, _mm512_set1_epi32(1));
+
+        // Gather values
+        const float* base = query.rotated_vecs[k].data();
+        __m512 vals = _mm512_i32gather_ps(indices, base, 4);
+
+        // Apply signs
+        __m512 sign_mask = _mm512_castsi512_ps(_mm512_slli_epi32(signs, 31));
+        vals = _mm512_xor_ps(vals, sign_mask);
+
+        scores = _mm512_add_ps(scores, vals);
+    }
+
+    // Negate and store
+    __m512 neg_scores = _mm512_xor_ps(scores, _mm512_set1_ps(-0.0f));
+    _mm512_storeu_ps(out_distances, neg_scores);
+}
+
+/**
+ * AVX-512 batch wrapper for K=64.
+ */
+inline void asymmetric_search_distance_batch_soa_avx512_k64(
+    const CPQuery<uint8_t, 64>& query,
+    const uint8_t codes_transposed[64][64],
+    size_t num_neighbors,
+    AsymmetricDist* out_distances) {
+
+    size_t n = 0;
+
+    // Process 16 neighbors at a time
+    for (; n + 16 <= num_neighbors; n += 16) {
+        asymmetric_search_distance_batch_soa_avx512_16_k64(
+            query, codes_transposed, n, out_distances + n);
+    }
+
+    // Scalar remainder
+    for (; n < num_neighbors; ++n) {
+        float score = 0.0f;
+        for (size_t k = 0; k < 64; ++k) {
+            uint8_t raw = codes_transposed[k][n];
+            size_t idx = raw >> 1;
+            bool is_negative = raw & 1;
+            float val = query.rotated_vecs[k][idx];
+            score += is_negative ? -val : val;
+        }
+        out_distances[n] = -score;
+    }
+}
+
+#endif  // CPHNSW_HAS_AVX512
+
+// ============================================================================
+// Legacy AoS Batch API (for backward compatibility)
+// ============================================================================
+
+/**
+ * Legacy batch distance with AoS layout (DEPRECATED).
+ * Kept for backward compatibility. New code should use SoA batch functions.
+ */
+template <typename ComponentT, size_t K>
+inline void asymmetric_search_distance_batch(
+    const CPQuery<ComponentT, K>& query,
+    const ComponentT* neighbor_codes,  // AoS: [N0_code][N1_code]...
+    size_t num_neighbors,
+    AsymmetricDist* out_distances) {
+
+    for (size_t n = 0; n < num_neighbors; ++n) {
+        float score = 0.0f;
+        const ComponentT* code = neighbor_codes + n * K;
+
+        for (size_t r = 0; r < K; ++r) {
+            ComponentT raw = code[r];
+            size_t idx = CPCode<ComponentT, K>::decode_index(raw);
+            bool is_negative = CPCode<ComponentT, K>::decode_sign_negative(raw);
+
+            float val = query.rotated_vecs[r][idx];
+            score += is_negative ? -val : val;
+        }
+
+        out_distances[n] = -score;
+    }
+}
+
+/**
+ * Scalar specialization of legacy batch distance for K=32.
+ */
+#if CPHNSW_HAS_AVX2
+template <>
+inline void asymmetric_search_distance_batch<uint8_t, 32>(
+    const CPQuery<uint8_t, 32>& query,
+    const uint8_t* neighbor_codes,
+    size_t num_neighbors,
+    AsymmetricDist* out_distances) {
+
+    // Process each neighbor (scalar - index lookups prevent SIMD)
+    for (size_t n = 0; n < num_neighbors; ++n) {
+        float score = 0.0f;
+        const uint8_t* code = neighbor_codes + n * 32;
+
+        // Process all 32 rotations
+        for (size_t r = 0; r < 32; ++r) {
+            uint8_t raw = code[r];
+            size_t idx = raw >> 1;
+            bool is_negative = raw & 1;
+
+            float val = query.rotated_vecs[r][idx];
+            score += is_negative ? -val : val;
+        }
+
+        out_distances[n] = -score;
+    }
+}
+#endif
+
+/**
+ * Scalar specialization of batch distance for K=16, uint8_t components.
+ *
+ * NOTE: This is a SCALAR implementation. See K=32 version for rationale.
+ */
+#if CPHNSW_HAS_AVX2
+template <>
+inline void asymmetric_search_distance_batch<uint8_t, 16>(
+    const CPQuery<uint8_t, 16>& query,
+    const uint8_t* neighbor_codes,
+    size_t num_neighbors,
+    AsymmetricDist* out_distances) {
+
+    // Process each neighbor (scalar - index lookups prevent SIMD)
+    for (size_t n = 0; n < num_neighbors; ++n) {
+        float score = 0.0f;
+        const uint8_t* code = neighbor_codes + n * 16;
+
+        for (size_t r = 0; r < 16; ++r) {
+            uint8_t raw = code[r];
+            size_t idx = raw >> 1;
+            bool is_negative = raw & 1;
+
+            float val = query.rotated_vecs[r][idx];
+            score += is_negative ? -val : val;
+        }
+
+        out_distances[n] = -score;
+    }
+}
+#endif
+
+/**
+ * Compute asymmetric search distance from raw code pointer.
+ *
+ * FLASH CONVENIENCE: Allows computing distance directly from
+ * the contiguous code storage in NeighborBlock without creating
+ * a CPCode object.
+ *
+ * @param query  Query with rotated vectors
+ * @param code   Pointer to K components of neighbor code
+ * @return       Asymmetric distance (negative dot product)
+ */
+template <typename ComponentT, size_t K>
+inline AsymmetricDist asymmetric_search_distance_ptr(
+    const CPQuery<ComponentT, K>& query,
+    const ComponentT* code) {
+
+    float score = 0.0f;
+
+    for (size_t r = 0; r < K; ++r) {
+        ComponentT raw = code[r];
+        size_t idx = CPCode<ComponentT, K>::decode_index(raw);
+        bool is_negative = CPCode<ComponentT, K>::decode_sign_negative(raw);
+
+        float val = query.rotated_vecs[r][idx];
+        score += is_negative ? -val : val;
+    }
+
+    return -score;
+}
+
+/**
+ * Scalar specialization for K=32, uint8_t.
+ *
+ * NOTE: This is a SCALAR implementation. See asymmetric_search_distance
+ * for rationale on why SIMD is not applicable here.
+ */
+#if CPHNSW_HAS_AVX2
+template <>
+inline AsymmetricDist asymmetric_search_distance_ptr<uint8_t, 32>(
+    const CPQuery<uint8_t, 32>& query,
+    const uint8_t* code) {
+
+    float score = 0.0f;
+
+    // Scalar loop - index lookups prevent SIMD vectorization
+    for (size_t r = 0; r < 32; ++r) {
+        uint8_t raw = code[r];
+        size_t idx = raw >> 1;
+        bool is_negative = raw & 1;
+
+        float val = query.rotated_vecs[r][idx];
+        score += is_negative ? -val : val;
+    }
+
+    return -score;
+}
+#endif
+
+/**
+ * Scalar specialization for K=16, uint8_t.
+ *
+ * NOTE: This is a SCALAR implementation. See asymmetric_search_distance
+ * for rationale on why SIMD is not applicable here.
+ */
+#if CPHNSW_HAS_AVX2
+template <>
+inline AsymmetricDist asymmetric_search_distance_ptr<uint8_t, 16>(
+    const CPQuery<uint8_t, 16>& query,
+    const uint8_t* code) {
+
+    float score = 0.0f;
+
+    // Scalar loop - index lookups prevent SIMD vectorization
+    for (size_t r = 0; r < 16; ++r) {
+        uint8_t raw = code[r];
         size_t idx = raw >> 1;
         bool is_negative = raw & 1;
 

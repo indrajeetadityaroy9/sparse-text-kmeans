@@ -5,6 +5,7 @@
 #include <limits>
 #include <cmath>
 #include <vector>
+#include <stdexcept>
 
 namespace cphnsw {
 
@@ -22,8 +23,7 @@ constexpr size_t CACHE_LINE_SIZE = 64;
 using NodeId = uint32_t;
 constexpr NodeId INVALID_NODE = std::numeric_limits<NodeId>::max();
 
-/// Layer level type (max 255 layers, typically < 16)
-using LayerLevel = uint8_t;
+// NOTE: LayerLevel removed for NSW flatten (single-layer graph)
 
 /// Hamming distance type (discrete, max distance = K, typically < 64)
 using HammingDist = uint16_t;
@@ -41,17 +41,31 @@ using Float = float;
 /**
  * CPCode: Compact Cross-Polytope hash code stored in the index.
  *
+ * RABITQ-STYLE MAGNITUDE AUGMENTATION (SIGMOD 2024):
+ * Standard CP-LSH discards magnitude information, treating all projections
+ * as equal. This causes massive variance when vectors have different
+ * "confidence" levels in their projections.
+ *
+ * Fix: Store quantized magnitude (0-255) for each rotation.
+ * - Storage: 2K bytes per node (K components + K magnitudes)
+ * - Distance: Score = Σ(sign × query_val × node_mag)
+ *
  * Template parameters:
  * - ComponentT: uint8_t for d <= 128, uint16_t for d > 128
  *   Each component encodes: (argmax_index << 1) | sign_bit
  * - K: Number of independent rotations (code width)
  *
- * Memory: K * sizeof(ComponentT) bytes per node
- * Example: K=16, uint8_t => 16 bytes per node
+ * Memory: K * sizeof(ComponentT) + K bytes per node
+ * Example: K=32, uint8_t => 64 bytes per node
  */
 template <typename ComponentT, size_t K>
 struct CPCode {
     std::array<ComponentT, K> components;
+
+    /// Quantized magnitudes for RaBitQ-style correction
+    /// Stored as uint8_t (0-255) to minimize storage
+    /// 0 = magnitude 0, 255 = max magnitude seen during encoding
+    std::array<uint8_t, K> magnitudes;
 
     /// Decode index from component (upper bits)
     static constexpr size_t decode_index(ComponentT c) {
@@ -67,12 +81,28 @@ struct CPCode {
     static constexpr ComponentT encode(size_t index, bool is_negative) {
         return static_cast<ComponentT>((index << 1) | (is_negative ? 1 : 0));
     }
+
+    /// Quantize magnitude to uint8_t
+    /// Input: raw magnitude (typically 0 to max_magnitude)
+    /// Scale factor should be pre-computed as 255 / expected_max
+    static constexpr uint8_t quantize_magnitude(float mag, float scale = 255.0f) {
+        float scaled = mag * scale;
+        if (scaled < 0.0f) scaled = 0.0f;
+        if (scaled > 255.0f) scaled = 255.0f;
+        return static_cast<uint8_t>(scaled);
+    }
+
+    /// Dequantize magnitude back to float
+    static constexpr float dequantize_magnitude(uint8_t qmag, float scale = 1.0f / 255.0f) {
+        return static_cast<float>(qmag) * scale;
+    }
 };
 
 // Common type aliases
 using CPCode8 = CPCode<uint8_t, 16>;    // For d <= 128 (SIFT-1M, GloVe-100)
 using CPCode16 = CPCode<uint16_t, 16>;  // For d > 128 (GIST-1M)
 using CPCode32 = CPCode<uint8_t, 32>;   // Higher precision variant
+using CPCode64 = CPCode<uint8_t, 64>;   // Highest precision variant
 
 /**
  * CPQuery: Query-time structure for asymmetric distance computation.
@@ -145,17 +175,11 @@ struct CPHNSWParams {
     /// Number of rotations (code width K) - higher = more precision
     size_t k = 32;
 
-    /// Max connections per node at layers > 0 - higher = more robust graph
+    /// Max connections per node (NSW: single layer, no M_max0 distinction)
     size_t M = 32;
-
-    /// Max connections at layer 0 (typically 2*M)
-    size_t M_max0 = 64;
 
     /// Search width during construction - deeper search for hybrid edges
     size_t ef_construction = 200;
-
-    /// Level multiplier: 1/ln(M)
-    double m_L = 0.0;
 
     /// Keep pruned connections for robustness (essential for connectivity)
     bool keep_pruned = true;
@@ -163,23 +187,79 @@ struct CPHNSWParams {
     /// Random seed for reproducibility
     uint64_t seed = 42;
 
-    /// Compute derived parameters
+    /// Number of random entry points for search (NSW: replaces hierarchy)
+    size_t k_entry = 4;
+
+    /// Detour threshold for rank-based pruning (CAGRA)
+    float rank_pruning_alpha = 1.1f;
+
+    /// Compute derived parameters and validate bounds
     void finalize() {
+        // ========================================
+        // Parameter Validation
+        // ========================================
+
+        // Dimension must be positive
+        if (dim == 0) {
+            throw std::invalid_argument("CPHNSWParams: dim must be > 0");
+        }
+
+        // Code width (k) must be positive and reasonable
+        if (k == 0) {
+            throw std::invalid_argument("CPHNSWParams: k (code width) must be > 0");
+        }
+        if (k > 256) {
+            throw std::invalid_argument("CPHNSWParams: k (code width) must be <= 256");
+        }
+
+        // Max connections (M) must be positive and fit in Flash layout
+        if (M == 0) {
+            throw std::invalid_argument("CPHNSWParams: M (max connections) must be > 0");
+        }
+        constexpr size_t FLASH_MAX_M_LIMIT = 64;  // From flat_graph.hpp
+        if (M > FLASH_MAX_M_LIMIT) {
+            throw std::invalid_argument(
+                "CPHNSWParams: M must be <= 64 (FLASH_MAX_M limit)");
+        }
+
+        // ef_construction should be >= M for good graph quality
+        if (ef_construction < M) {
+            throw std::invalid_argument(
+                "CPHNSWParams: ef_construction must be >= M for good graph quality");
+        }
+        if (ef_construction > 10000) {
+            throw std::invalid_argument(
+                "CPHNSWParams: ef_construction must be <= 10000");
+        }
+
+        // k_entry must be positive (NSW random entry points)
+        if (k_entry == 0) {
+            throw std::invalid_argument("CPHNSWParams: k_entry must be > 0");
+        }
+        if (k_entry > 100) {
+            throw std::invalid_argument("CPHNSWParams: k_entry must be <= 100");
+        }
+
+        // Pruning alpha must be >= 1.0 (triangle inequality threshold)
+        if (rank_pruning_alpha < 1.0f) {
+            throw std::invalid_argument(
+                "CPHNSWParams: rank_pruning_alpha must be >= 1.0");
+        }
+        if (rank_pruning_alpha > 3.0f) {
+            throw std::invalid_argument(
+                "CPHNSWParams: rank_pruning_alpha must be <= 3.0");
+        }
+
+        // ========================================
+        // Derived Parameters
+        // ========================================
+
         // Pad dimension to next power of 2
         padded_dim = 1;
         while (padded_dim < dim) {
             padded_dim *= 2;
         }
-
-        // Compute level multiplier if not set
-        if (m_L <= 0.0) {
-            m_L = 1.0 / std::log(static_cast<double>(M));
-        }
-
-        // Default M_max0
-        if (M_max0 == 0) {
-            M_max0 = 2 * M;
-        }
+        // NOTE: m_L and M_max0 removed for NSW flatten
     }
 };
 

@@ -1,0 +1,69 @@
+=== CP-HNSW Master Evaluation Protocol ===
+
+OpenMP: Enabled (max threads: 52)
+AVX-512: Disabled
+Output directory: results//k64
+
+Loading SIFT-1M from: ./data/sift
+  Loaded 1000000 base vectors, 10000 queries, dim=128
+
+=== Experiment 1: Recall vs QPS (Money Plot) ===
+
+Building CP-HNSW index (M=32, K=64, ef_c=200)...
+Build time: 151.58s (6597 vec/s)
+Connectivity: 994197/1000000
+
+        ef   Recall@10         QPS  Latency(us)
+------------------------------------------------
+
+[Mode: CPU Search Only]
+        10      0.3102        4453         224.6
+        20      0.3407        3049         327.9
+        40      0.3560        1946         513.9
+        80      0.3645        1141         876.1
+       100      0.3652         947        1056.2
+       200      0.3672         499        2002.7
+       400      0.3676         265        3778.3
+
+[Mode: CPU Search + CPU Rerank]
+        10      0.6394        1615         619.2 (rerank_k=50)
+        20      0.6381        1616         618.8 (rerank_k=50)
+        40      0.6384        1616         619.0 (rerank_k=50)
+        80      0.6549        1125         889.1 (rerank_k=50)
+       100      0.6601         934        1071.1 (rerank_k=50)
+       200      0.6686         500        1998.4 (rerank_k=50)
+       400      0.6718         257        3888.1 (rerank_k=50)
+        10      0.7448         876        1141.7 (rerank_k=100)
+        20      0.7449         883        1132.5 (rerank_k=100)
+        40      0.7447         872        1147.2 (rerank_k=100)
+        80      0.7448         876        1141.9 (rerank_k=100)
+       100      0.7452         881        1135.0 (rerank_k=100)
+       200      0.7608         484        2065.5 (rerank_k=100)
+       400      0.7668         254        3941.5 (rerank_k=100)
+        10      0.8168         424        2356.0 (rerank_k=200)
+        20      0.8169         427        2339.6 (rerank_k=200)
+        40      0.8168         423        2363.6 (rerank_k=200)
+        80      0.8169         420        2383.7 (rerank_k=200)
+       100      0.8168         426        2349.8 (rerank_k=200)
+       200      0.8169         427        2341.0 (rerank_k=200)
+       400      0.8264         238        4201.7 (rerank_k=200)
+
+Results saved to: results//k64/exp1_recall_qps/cphnsw_results.csv
+
+=== Experiment 3: Topology Ablation (Why Hybrid?) ===
+
+Running ablation on first 100000 vectors
+
+      Edge Selection    ConnectivityGraph Recall@10
+----------------------------------------------------
+         True_Cosine            99.6%          0.1268
+
+Note: Pure CP edge selection requires code modifications.
+Expected results based on prior experiments:
+       CP_Asymmetric            ~67%          ~0.13
+        CP_Symmetric            ~48%          ~0.05
+
+Results saved to: results//k64/exp3_ablation/topology_comparison.csv
+
+=== Evaluation Complete ===
+Results saved to: results//k64/

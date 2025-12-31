@@ -1,0 +1,3 @@
+dataset,dim,K,num_pairs,pearson_r
+SIFT1M,128,16,10000,0.971445
+SIFT1M,128,32,10000,0.971479
