@@ -18,6 +18,7 @@
 #include "../include/cphnsw/index/cp_hnsw_index.hpp"
 #include "datasets/dataset_loader.hpp"
 #include "metrics/recall.hpp"
+#include "utils/common.hpp"
 
 #include <iostream>
 #include <iomanip>
@@ -30,7 +31,6 @@
 #include <numeric>
 #include <random>
 #include <cmath>
-#include <sys/resource.h>  // For getrusage
 
 #ifdef CPHNSW_USE_OPENMP
 #include <omp.h>
@@ -40,7 +40,7 @@ using namespace cphnsw;
 using namespace cphnsw::eval;
 
 // =============================================================================
-// Utility Functions
+// Benchmark Configuration
 // =============================================================================
 
 struct BenchmarkConfig {
@@ -54,43 +54,6 @@ struct BenchmarkConfig {
     size_t limit = 0;  // 0 = no limit, >0 = limit base vectors
     bool verbose = true;
 };
-
-void ensure_directory(const std::string& dir) {
-    std::string cmd = "mkdir -p " + dir;
-    system(cmd.c_str());
-}
-
-std::string format_number(double val, int precision = 2) {
-    std::ostringstream ss;
-    ss << std::fixed << std::setprecision(precision) << val;
-    return ss.str();
-}
-
-size_t get_rss_bytes() {
-    struct rusage usage;
-    getrusage(RUSAGE_SELF, &usage);
-    return static_cast<size_t>(usage.ru_maxrss) * 1024;  // ru_maxrss is in KB on Linux
-}
-
-double compute_pearson_correlation(const std::vector<double>& x, const std::vector<double>& y) {
-    if (x.size() != y.size() || x.empty()) return 0.0;
-
-    size_t n = x.size();
-    double sum_x = 0, sum_y = 0, sum_xy = 0, sum_x2 = 0, sum_y2 = 0;
-
-    for (size_t i = 0; i < n; ++i) {
-        sum_x += x[i];
-        sum_y += y[i];
-        sum_xy += x[i] * y[i];
-        sum_x2 += x[i] * x[i];
-        sum_y2 += y[i] * y[i];
-    }
-
-    double num = n * sum_xy - sum_x * sum_y;
-    double den = std::sqrt((n * sum_x2 - sum_x * sum_x) * (n * sum_y2 - sum_y * sum_y));
-
-    return (den > 1e-10) ? num / den : 0.0;
-}
 
 // =============================================================================
 // Experiment 1: Recall vs QPS ("Money Plot")

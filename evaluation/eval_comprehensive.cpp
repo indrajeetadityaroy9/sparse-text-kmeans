@@ -1,26 +1,13 @@
 #include "../include/cphnsw/index/cp_hnsw_index.hpp"
 #include "datasets/dataset_loader.hpp"
 #include "metrics/recall.hpp"
+#include "utils/common.hpp"
 #include <iostream>
 #include <iomanip>
 #include <chrono>
-#include <thread>
 
 using namespace cphnsw;
 using namespace cphnsw::eval;
-
-void print_system_info() {
-    std::cout << "=== System Information ===\n";
-    std::cout << "Hardware threads: " << std::thread::hardware_concurrency() << "\n";
-    std::cout << "Compilation: ";
-#ifdef __AVX512F__
-    std::cout << "AVX-512 ";
-#endif
-#ifdef __AVX2__
-    std::cout << "AVX2 ";
-#endif
-    std::cout << "\n\n";
-}
 
 void run_evaluation(size_t n, size_t dim, size_t num_queries, size_t k,
                     size_t M, size_t ef_construction, size_t K_rotations = 16) {

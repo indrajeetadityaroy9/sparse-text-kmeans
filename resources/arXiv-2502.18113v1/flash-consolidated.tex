@@ -1,0 +1,282 @@
+\documentclass[sigconf, acm, screen]{acmart}
+
+\newtheorem{myDef}{Definition}
+\newtheorem{myExa}{Example}
+\newtheorem{myLemma}{Lemma}
+\newtheorem{myTheorem}{Theorem}
+\newtheorem{myProposition}{Proposition}
+\newtheorem{myAssumption}{Assumption}
+\usepackage[ruled,vlined]{algorithm2e}
+\usepackage{algpseudocode}
+\usepackage{multirow}
+\usepackage{stackengine}
+\usepackage{makecell}
+\usepackage{setspace}
+
+\newcommand{\name}{$\mathtt{MSG}$}
+\newcommand{\method}[1]{#1}
+\newcommand{\methodbt}[1]{#1}
+\newcommand{\squishlist}{
+	\begin{list}{$\bullet$}
+		{ \setlength{\itemsep}{1pt}
+			\setlength{\parsep}{1pt}
+			\setlength{\topsep}{2.5pt}
+			\setlength{\partopsep}{0.5pt}
+			\setlength{\leftmargin}{1em}
+			\setlength{\labelwidth}{1em}
+			\setlength{\labelsep}{0.6em}
+		}
+	}
+	\newcommand{\squishend}{
+	\end{list}
+}
+
+\usepackage{tikz}
+\newcommand*\circled[1]{\tikz[baseline=(char.base)]{
+            \node[shape=circle,draw,inner sep=0.3pt] (char) {#1};}}
+
+\makeatletter
+  \newcommand\figcaption{\def\@captype{figure}\caption}
+  \newcommand\tabcaption{\def\@captype{table}\caption}
+\makeatother
+
+\makeatletter
+\patchcmd{\@algocf@start}{-1.5em}{0pt}{}{}
+\makeatother
+
+\settopmatter{printacmref=false}
+\setcopyright{acmcopyright}
+\copyrightyear{2025}
+\acmYear{2025}
+\acmDOI{XXXXXXX.XXXXXXX}
+\acmConference[SIGMOD '25]{Make sure to enter the correct conference title from your rights confirmation email}{June 22--27, 2025}{Berlin, Germany}
+
+\begin{document}
+
+\title{Accelerating Graph Indexing for ANNS on Modern CPUs}
+
+\author{Mengzhao Wang}
+\affiliation{\institution{Zhejiang University}}
+\email{wmzssy@zju.edu.cn}
+
+\author{Haotian Wu}
+\affiliation{\institution{Zhejiang University}}
+\email{haotian.wu@zju.edu.cn}
+
+\author{Xiangyu Ke}
+\affiliation{\institution{Zhejiang University}}
+\email{xiangyu.ke@zju.edu.cn}
+
+\author{Yunjun Gao}
+\affiliation{\institution{Zhejiang University}}
+\email{gaoyj@zju.edu.cn}
+
+\author{Yifan Zhu}
+\affiliation{\institution{Zhejiang University}}
+\email{xtf_z@zju.edu.cn}
+
+\author{Wenchao Zhou}
+\affiliation{\institution{Alibaba Group}}
+\email{zwc231487@alibaba-inc.com}
+
+
+\begin{abstract}
+{In high-dimensional vector spaces, Approximate Nearest Neighbor Search (ANNS) is a key component in database and artificial intelligence infrastructures.
+Graph-based methods, particularly HNSW, have emerged as leading solutions among various ANNS approaches, offering an impressive trade-off between search efficiency and accuracy.
+Many modern vector databases utilize graph indexes as their core algorithms, benefiting from various optimizations to enhance search performance. However, the high indexing time associated with graph algorithms poses a significant challenge, especially given the increasing volume of data, query processing complexity, and dynamic index maintenance demand. This has rendered indexing time a critical performance metric for users.}
+
+{In this paper, we comprehensively analyze the underlying causes of the low graph indexing efficiency on modern CPUs, identifying that distance computation dominates indexing time, primarily due to high memory access latency and suboptimal arithmetic operation efficiency.
+We demonstrate that distance comparisons during index construction can be effectively performed using compact vector codes at an appropriate compression error. Drawing from insights gained through integrating existing compact coding methods in the graph indexing process, we propose a novel compact coding strategy, named \texttt{Flash}, designed explicitly for graph indexing and optimized for modern CPU architectures. By minimizing random memory accesses and maximizing the utilization of SIMD (Single Instruction, Multiple Data) instructions, \texttt{Flash} significantly enhances cache hit rates and arithmetic operations. Extensive experiments conducted on eight real-world datasets, ranging from ten million to one billion vectors, exhibit that \texttt{Flash} achieves a speedup of 10.4$\times$ to 22.9$\times$ in index construction efficiency, while maintaining or improving search performance.}
+
+\end{abstract}
+
+\maketitle
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% INTRODUCTION
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Introduction}
+\label{sec: intro}
+Approximate Nearest Neighbor Search (ANNS) in high-dimensional spaces has become integral due to the advent of deep learning embedding techniques for managing unstructured data. This spans a variety of applications, such as recommendation systems, information retrieval, and vector databases.
+Owing to the ``curse of dimensionality'' and the ever-increasing volume of data, ANNS seeks to optimize both speed and accuracy, making it more practical compared to the exact solutions, which can be prohibitively time-consuming.
+Given a query vector, ANNS efficiently finds its $k$ nearest vectors in a vector dataset following a specific distance metric.
+Current studies explore four index types for ANNS: Tree-based, Hash-based, Quantization-based, and Graph-based methods.
+Among these, graph-based algorithms like \method{HNSW} have demonstrated superior performance, establishing themselves as the industry standard and attracting substantial academic interest.
+For example, \method{HNSW} underpins various ANNS services or vector databases, including PostgreSQL, ElasticSearch, Milvus, and Pinecone.
+
+Although numerous studies have explored optimizations for search performance, research on improving index construction efficiency remains limited, which is increasingly critical in real-world applications.
+First, the {\em vast volume of data} poses significant challenges for index construction. For instance, building an \method{HNSW} index on tens of millions of vectors typically requires about \textit{10 hours}, billion-scale datasets may extend construction time to \textit{five days}, even with relaxed construction parameters.
+Second, complex query processing, such as hybrid search, adds constraints on ANNS, {\em complicating the construction process} and increasing indexing times. For example, constructing a specialized \method{HNSW} index for attribute-constrained ANNS takes 33$\times$ longer than a standard index.
+More importantly, {\em continuous data and embedding model updates} necessitate a periodic reconstruction process based on the LSM-Tree framework.
+Thus, reconstruction efficiency has become a bottleneck in modern vector databases, as it {\bf \em directly impacts the ability to rapidly release new services with up-to-date data and high search performance}. In business scenarios, index rebuilding often occurs overnight during low user activity, constrained to a few hours. Serving approximately 100M vectors on a single node, the \method{HNSW} build time frequently exceeds 12 hours, failing to meet the requirement.
+
+To enhance the index construction efficiency, employing specialized hardware like GPUs is a straightforward approach.
+By leveraging GPUs' parallel computing capabilities, recent studies have parallelized distance computations and data structure maintenance for the graph indexing process on \textit{million-scale} datasets, achieving an order of magnitude speedup over single-thread CPU implementations.
+However, challenges such as high costs, memory constraints, and additional engineering efforts limit their practical applications.
+For instance, even high-end GPUs like the NVIDIA A100, with tens of gigabytes of memory, struggle to accommodate large vector datasets requiring hundreds of gigabytes.
+As noted by Stonebraker in his recent survey, ``\textit{If data does not fit in GPU memory, query execution bottlenecks on loading data into the device, significantly diminishing parallelization benefits.}'' Consequently, CPU-based deployment remains the prevalent choice in practical scenarios, providing a cost-effective, memory-sufficient, and easy-to-use solution.
+This motivates us to explore optimization opportunities to improve the index construction efficiency on modern CPUs.
+
+In this paper, we conduct an in-depth analysis of the \method{HNSW} construction process, identifying the root causes of inefficiency on modern CPUs. Results indicate that distance computation constitutes over 90\% of the total construction time, marking it as the major bottleneck, while memory accesses and arithmetic operations contribute similarly.
+The lack of spatial locality in the \method{HNSW} index necessitates random memory accesses to fetch vectors for almost every distance computation. Building \method{HNSW} on a dataset of size $n$ requires $O(n\log(n))$ distance calculations, leading to frequent cache misses as target data is often uncached. As a result, the memory controller frequently loads data from main memory, resulting in high access latency.
+Additionally, current vector data typically consists of high-dimensional floating-point numbers, occupying $4\cdot D$ bytes for dimension $D$ (e.g., 3KB for $D=768$). However, Single Instruction, Multiple Data (SIMD) registers are restricted to hundreds of bits (e.g., 128 bits for the SSE instruction set), much smaller than vector sizes. Thus, each distance computation requires hundreds of memory reads to load vector segments into a register, reducing the efficiency of SIMD operations. Notably, all distances are calculated solely for comparison during HNSW construction. Recent studies suggest that exact distances are unnecessary for comparison.
+
+To address these issues, we optimize the \method{HNSW} construction process by reducing random memory accesses and effectively utilizing SIMD instructions. The theoretical analysis demonstrates that distance comparisons during index construction can be performed effectively using compact vector codes at an appropriate compression error. We initially implement mainstream vector compression methods---Product Quantization (PQ), Scalar Quantization (SQ), and Principal Component Analysis (PCA)---into the \method{HNSW} construction process. However, these methods yield limited improvements in indexing efficiency or degrade search performance, as they do not align with HNSW's construction characteristics. Further observations show that they fail to reduce excessive random memory accesses and do not leverage SIMD advantages.
+This motivates us to develop a speci\underline{\textbf{f}}ic compact coding strategy, a\underline{\textbf{l}}ongside memory l\underline{\textbf{a}}yout optimization for the con\underline{\textbf{s}}truction process of \underline{\textbf{H}}NSW, named \texttt{Flash}. To maximize SIMD instruction utilization, \texttt{Flash} is designed to accommodate SIMD register features, enabling concurrent execution of distance computations within the SIMD register. To minimize random memory accesses, \texttt{Flash} is effectively organized to match data access and register load patterns.
+Ultimately, \texttt{Flash} avoids numerous random memory accesses and enhances SIMD usage, achieving an order of magnitude speedup in construction efficiency while maintaining or improving search performance. To the best of our knowledge, this is the first work to reach such significant speedup on modern CPUs.
+
+To sum up, this paper makes the following contributions.
+
+\squishlist
+
+\item We deeply analyze the construction process of \method{HNSW} and identify the root causes of low construction efficiency on modern CPUs. Specifically, we find that distance computation suffers from high memory access latency and low arithmetic operation efficiency, which accounts for over 90\% of indexing time.
+
+\item We propose a novel compact coding strategy, \texttt{Flash}, specifically designed for \method{HNSW} construction, optimizing index layout for efficient memory accesses and SIMD utilization. This approach improves cache hits and register-resident computation.
+
+\item We conduct extensive evaluations on real-world datasets, ranging from ten million to billion-scale, demonstrating that construction efficiency can be improved by over an order of magnitude, while search performance remains the same or even improves.
+
+\item We summarize three notable findings from our research: (1) a compact coding method that significantly enhances search performance may not be suitable for index construction; (2) reducing more dimensions may bring higher accuracy; and (3) encoding vectors and distances with a tiny amount of bits to align with hardware constraints may yield substantial benefits.
+
+\squishend
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% BACKGROUND AND MOTIVATION
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Background and Motivation}
+\label{sec: background}
+In this section, we first review current graph-based ANNS algorithms to ascertain the leadership of \method{HNSW}, then outline search and indexing optimizations based on \method{HNSW}. Next, we provide a detailed analysis of the \method{HNSW} construction process to identify the root causes of inefficiency on modern CPUs.
+
+\subsection{Related Work}
+\label{subsec: Related Work}
+
+\subsubsection{\textbf{Graph-based ANNS Algorithms}}
+Graph-based ANNS algorithms have emerged as the leading approach for balancing search accuracy and efficiency in high-dimensional spaces. These methods construct a graph index where vertices represent database vectors, and directed edges signify neighbor relationships. During search, a greedy algorithm navigates the graph, visiting a vertex's neighbors and selecting the one closest to the query, continuing until no closer neighbor is found, yielding the final result.
+Current methods share similar index structures and greedy search strategies but differ in their edge selection strategies during graph construction. For example, \method{HNSW} and \method{NSG} use the Monotonic Relative Neighborhood Graph (MRNG) strategy, while \method{Vamana} and $\tau$-\method{MG} incorporate additional parameters. {Despite these variations, state-of-the-art methods like \method{HNSW}, \method{NSG}, Vamana, and $\tau$-\method{MG} adhere to a similar construction framework, consisting of Candidate Acquisition (CA) and Neighbor Selection (NS) stages.} {Our research identifies the bottleneck in the CA and NS steps, where distance calculations dominate indexing time. Consequently, improving the CA and NS steps will accelerate the indexing process in all these graph algorithms.} Notably, \method{HNSW} stands out for its robust optimizations and versatile features, including native \textit{add} support. Numerous studies have enhanced \method{HNSW} from various perspectives, solidifying its role as a mainstream method in both industry and academia.
+
+\subsubsection{\textbf{Search Optimizations on \methodbt{HNSW}}}
+Search optimizations for \method{HNSW} focus on several key components. Some aim to optimize entry point acquisition by leveraging additional quantization or hashing structures to start closer to the query. Others optimize neighbor visits by learning global or topological information, enhancing data locality, and partitioning neighbor areas. These strategies improve accuracy and efficiency by identifying relevant neighbors and skipping irrelevant ones. Some approaches reduce distance computation complexity using approximate calculations, enhancing search efficiency with minimal accuracy loss. Additionally, optimizations refine termination conditions through adaptive decision-making and relaxed monotonicity.
+Specialized hardware like GPUs, FPGAs, Compute Express Link (CXL), Non-Volatile Memory (NVM), NVMe SSDs, and SmartSSDs accelerate distance computation and optimize the \method{HNSW} index layout, achieving superior performance through software-hardware collaboration.
+
+\subsubsection{\textbf{Indexing Optimizations of \methodbt{HNSW}}}
+Despite HNSW's superior search performance, its low index construction efficiency remains a major bottleneck, a challenge shared by other graph-based methods. As demands for dynamic updates, large-scale data, and complex queries grow, optimizing HNSW construction becomes increasingly important. Current research targets two areas: algorithm optimization and hardware acceleration.
+Algorithm optimization efforts have redesigned the construction pipeline, either fully or partially, but these attempts offer only marginal improvements. Moreover, these optimizations substantially modify the algorithmic process of \method{HNSW}, requiring code refactoring that may disrupt many engineering optimizations integrated over the years. Some HNSW features, like native \textit{add} support, are weakened or even discarded.
+On the other hand, GPU-accelerated methods parallelize distance computations during \method{HNSW} construction. These methods re-implement \method{HNSW} to align with GPU architecture, achieving an order of magnitude speedup compared to single-thread CPU-based construction. However, GPU-specific limitations reduce their practicality in real-world scenarios. As CPU-based \method{HNSW} remains prevalent in many industrial applications, accelerating \method{HNSW} construction on modern CPUs is crucial.
+
+\subsection{Problem Analysis}
+\label{subsec: problem analysis}
+
+\noindent\underline{Notations.} In the HNSW index, each vertex corresponds to a unique vector, denoted by bold lowercase letters (e.g., $\boldsymbol{x}$, $\boldsymbol{y}$). We use the Euclidean distance $\delta(\boldsymbol{x}, \boldsymbol{y})$ as the distance metric for quantifying similarity, where a smaller $\delta(\boldsymbol{x}, \boldsymbol{y})$ indicates greater similarity. Bold uppercase letters (e.g., $\boldsymbol{S}$) denote sets, while unbolded uppercase and lowercase letters represent parameters.
+
+Given a vector dataset $\boldsymbol{S}$, the \method{HNSW} index $\boldsymbol{G}$ is built by progressively inserting vectors into the current graph index. Two hyper-parameters must be set before index construction: the maximum number of candidates ($C$) and the maximum number of neighbors ($R$). For each inserted vector $\boldsymbol{x}$, the maximum layer $l_{max}$ is randomly selected following an exponentially decaying distribution. The vector is inserted into layers from $l_{max}$ to $0$, with the same procedure applied at each layer. At layer $l$, $\boldsymbol{x}$ is treated as a query point, and a greedy search on the current graph at layer $l$ identifies the top-$C$ nearest vertices as candidates. During the search, a candidate set $\boldsymbol{C(x)}$ of size $C$ is maintained, with vertices ordered in ascending distance to $\boldsymbol{x}$, and the maximum distance is denoted as $T$. The search iteratively visits a vertex's neighbors, calculates their distances to $\boldsymbol{x}$, and updates $\boldsymbol{C(x)}$ with neighbors that have smaller distances ($<T$). To obtain the final neighbors, a heuristic edge selection strategy prevents clustering among neighbors.
+
+The construction process of \method{HNSW} involves two main steps: \textit{Candidate Acquisition} (CA) and \textit{Neighbor Selection} (NS). The CA step identifies the top-$C$ nearest vertices for an inserted vector using a greedy search strategy. This involves visiting a vertex's neighbor list and computing distances to the inserted vector, requiring random memory access to fetch a neighbor's vector data, stored separately from neighbor IDs due to the large vector size. In the NS step, the final $R$ neighbors are selected from the candidate set using a heuristic strategy. Here, distances among candidates are computed, also requiring random access to their vector data. In both CA and NS, distance calculations are used solely for comparison. HNSW currently performs all distance computations on full-precision vectors. Additionally, to utilize SIMD acceleration, a distance computation requires hundreds of read operations to load vector segments into a 128-bit register due to a large vector size, often spanning thousands of bytes.
+
+Our analysis reveals that the primary inefficiency in HNSW index construction lies in the current distance computation process, consuming over 90\% of indexing time. This process suffers from numerous random memory accesses and suboptimal SIMD utilization, misaligning with modern CPU architecture. Thus, optimizing distance computation to better exploit modern CPU capabilities is essential for accelerating HNSW construction.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% METHODOLOGY
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Methodology}
+\label{sec: data processing}
+In this section, we theoretically analyze how distance comparisons in \method{HNSW} construction can be effectively executed using compact vector codes. Based on this, we integrate three common vector compression methods---Product Quantization (PQ), Scalar Quantization (SQ), and Principal Component Analysis (PCA)---into \method{HNSW}. Drawing from the integration of these methods in HNSW construction, we design a novel compact coding strategy and optimize the memory layout for HNSW construction, enhancing memory access efficiency and SIMD operations.
+
+\subsection{Theoretical Analysis}
+Recall that distance computation during HNSW construction is a major bottleneck, with one distance value primarily compared against another. We denote distance comparisons for updating the candidate set as DC1, and for selecting final neighbors as DC2. Here, we demonstrate that DC1 and DC2 can be unified into a generalized framework and analyze how these comparisons can be effectively performed using compact vector codes.
+
+\begin{myLemma}
+\label{lemma: dist comp}
+Given any three vertices $\boldsymbol{u}$, $\boldsymbol{v}$, and $\boldsymbol{w}$ in $D$-dimensional Euclidean space $\mathbb{R}^D$, the comparison between $\delta(\boldsymbol{u}, \boldsymbol{v})$ and $\delta(\boldsymbol{u}, \boldsymbol{w})$ is:
+
+\noindent $\bullet$ $\delta(\boldsymbol{u}, \boldsymbol{v}) < \delta(\boldsymbol{u}, \boldsymbol{w})$ if and only if $\boldsymbol{e} \cdot \boldsymbol{u} - b < 0$;
+
+\noindent $\bullet$ $\delta(\boldsymbol{u}, \boldsymbol{v}) > \delta(\boldsymbol{u}, \boldsymbol{w})$ if and only if $\boldsymbol{e} \cdot \boldsymbol{u} - b > 0$;
+
+\noindent $\bullet$ $\delta(\boldsymbol{u}, \boldsymbol{v}) = \delta(\boldsymbol{u}, \boldsymbol{w})$ if and only if $\boldsymbol{e} \cdot \boldsymbol{u} - b = 0$;
+
+\noindent where $\boldsymbol{e} \cdot \boldsymbol{u} - b = 0$ defines the perpendicular bisector hyperplane between $\boldsymbol{v}$ and $\boldsymbol{w}$, with $\boldsymbol{e}=\boldsymbol{w} - \boldsymbol{v}$ and $b = \frac{\|\boldsymbol{w}\|^2 - \|\boldsymbol{v}\|^2}{2}$.
+\end{myLemma}
+
+\begin{myTheorem}
+\label{the: Dist. Comp.}
+{
+For three vertices $\boldsymbol{u}$, $\boldsymbol{v}$, and $\boldsymbol{w}$ in $D$-dimensional Euclidean space $\mathbb{R}^D$, with compact vector codes $\boldsymbol{u}^{\prime}$, $\boldsymbol{v}^{\prime}$, and $\boldsymbol{w}^{\prime}$, the condition $\delta(\boldsymbol{u}, \boldsymbol{v}) > \delta(\boldsymbol{u}, \boldsymbol{w})$ is equivalent to $\delta(\boldsymbol{u}^{\prime}, \boldsymbol{v}^{\prime}) > \delta(\boldsymbol{u}^{\prime}, \boldsymbol{w}^{\prime})$ when $|\boldsymbol{e} \cdot \boldsymbol{u} - b|\geq |E|$. The quantity $E$ is defined as
+\begin{equation}
+\begin{aligned}
+    E = &(E_{\boldsymbol{w}}-E_{\boldsymbol{v}}) \cdot \boldsymbol{u} + (\boldsymbol{w}-\boldsymbol{v})\cdot E_{\boldsymbol{u}} + E_{\boldsymbol{v}} \cdot E_{\boldsymbol{u}} - E_{\boldsymbol{w}}\cdot E_{\boldsymbol{u}}\\
+    &+ \frac{1}{2}||E_{\boldsymbol{w}}||^2-\frac{1}{2}||E_{\boldsymbol{v}}||^2 +\boldsymbol{v}\cdot E_{\boldsymbol{v}}-\boldsymbol{w}\cdot E_{\boldsymbol{w}}
+\end{aligned}
+\end{equation}
+where $E_{\boldsymbol{u}}$, $E_{\boldsymbol{v}}$, and $E_{\boldsymbol{w}}$ are the error vectors corresponding to $\boldsymbol{u}$, $\boldsymbol{v}$, and $\boldsymbol{w}$, respectively.
+}
+\end{myTheorem}
+
+Theorem \ref{the: Dist. Comp.} elucidates how distance comparison is preserved despite compression error. By adjusting the parameters of compact coding (thus affecting $E$), the condition $|\boldsymbol{e} \cdot \boldsymbol{u} - b|\geq |E|$ can always be satisfied. Consequently, an appropriate compression error maintains accurate distance comparison while reducing vector data size, enhancing memory access and SIMD operations.
+
+\subsection{Baseline Solutions}
+\label{subsec: baseline solutions}
+
+\subsubsection{\textbf{Deploying PQ in HNSW}}
+Product Quantization (PQ) splits high-dimensional vectors into subvectors that are independently compressed. For each subspace, a codebook of centroids is generated, and during encoding, the ID of the nearest centroid is selected to create a compact representation.
+
+\subsubsection{\textbf{Deploying SQ in HNSW}}
+Scalar Quantization (SQ) compresses each dimension of vectors independently. It divides data ranges into intervals, assigning each interval an integer value. Floating-point values within an interval are approximated by that integer value, thus reducing vector size by lowering the required bits.
+
+\subsubsection{\textbf{Deploying PCA in HNSW}}
+Principal Component Analysis (PCA) reduces dimensionality by projecting high-dimensional vectors into a lower-dimensional space. It applies an orthogonal transformation matrix to a vector, preserving its norm while prioritizing significant components in lower dimensions.
+
+\subsubsection{\textbf{Lessons Learned}}
+Theoretical and empirical analyses reveal that index construction can be accelerated using compact coding techniques, and construction efficiency and index quality can be well balanced by adjusting the compression error. An appropriate compression error reduces vector data size, improving memory access and SIMD operation efficiency while preserving accurate distance comparisons. Nonetheless, the core mechanism of these methods---vector size reduction---does not align well with HNSW's construction characteristics on modern CPUs. Regardless of whether HNSW-PQ, HNSW-SQ, or HNSW-PCA is used, the random memory access pattern during index construction remains unchanged. In terms of arithmetic operations, HNSW-PQ's distance table lookup is unable to fully utilize SIMD operations, as each computation is executed individually. While HNSW-SQ and HNSW-PCA reduce register loads by computing directly on compressed vectors, they still process distance computations sequentially, underutilizing SIMD's advantages.
+
+\subsection{The \texttt{Flash} Method}
+\label{subsec: opt method}
+We propose a speci\underline{\textbf{f}}ic compact coding strategy a\underline{\textbf{l}}ongside memory l\underline{\textbf{a}}yout optimization for the con\underline{\textbf{s}}truction process of \underline{\textbf{H}}NSW, named \texttt{Flash}, which minimizes random memory accesses while maximizing SIMD utilization.
+
+\subsubsection{\textbf{Design Overview}}
+Given that a CPU core has multiple SIMD registers, \texttt{Flash} partitions the high-dimensional space into subspaces, enabling parallel processing of subspaces in these registers.
+To accommodate the distinct distance computations in Candidate Acquisition (CA) and Neighbor Selection (NS) stages, it introduces Asymmetric Distance Tables (ADT) for the CA stage, residing in SIMD registers, and Symmetric Distance Tables (SDT) for the NS stage, located in cache. It optimizes the bit counts allocated for each codeword and applies SQ to compress the precomputed ADT to fit within a SIMD register, thereby reducing register loads. Since high-dimensional vectors often exhibit uneven variances across dimensions, \texttt{Flash} utilizes PCA to extract the principal components of vectors, generating subspaces based on these components, enhancing bit utilization within the SIMD register's constraints.
+When organizing neighbor lists, neighbor IDs are grouped with corresponding codewords to minimize random memory accesses. Rather than sequentially storing all codewords for a neighbor, \texttt{Flash} gathers the codewords of a batch of neighbors within a specific subspace.
+
+\texttt{Flash} enhances HNSW construction by optimizing memory layout and SIMD operations. Two hyperparameters---the number of subspaces ($M_F$) and the dimension of the principal components ($d_F$)---can be adjusted to balance construction efficiency and search performance.
+
+\subsubsection{\textbf{Extracting Principal Components}}
+\texttt{Flash} employs PCA to project high-dimensional vectors by rearranging dimensions in descending order of variance. This approach preserves essential low-dimensional principal components by selecting the first $d_{F}$ dimensions, encapsulating the most significant features.
+
+\subsubsection{\textbf{Subspace Division and Distance Table Compression}}
+\texttt{Flash} decomposes each vector's principal components into $M_{F}$ disjoint subvectors. A codebook is created for each subspace, and the nearest centroid's ID serves as the codeword. For each inserted vector, asymmetric distance tables (ADT) and codewords are simultaneously generated across $M_{F}$ subspaces.
+To adapt ADT for SIMD registers, \texttt{Flash} employs SQ to map each distance to discrete levels. In the NS stage, \texttt{Flash} precomputes a symmetric distance table (SDT) that stores distances between centroids in each subspace.
+
+\subsubsection{\textbf{Access-Aware Memory Layout}}
+For an inserted vector $\boldsymbol{u}$, the CA stage updates candidates via greedy search. By attaching neighbor codewords to neighbor IDs, \texttt{Flash} computes distances directly in register-resident ADTs, avoiding random memory accesses. To efficiently use SIMD instructions, \texttt{Flash} gathers $B$ neighbor codewords in a subspace, processing them concurrently.
+
+\subsubsection{\textbf{SIMD Acceleration}}
+SIMD instructions support vectorized execution, enabling simultaneous processing of multiple data points. \texttt{Flash} uses SIMD to look up ADTs and sum partial distances across subspaces. An ADT resides in a SIMD register, storing distances between the inserted vector and centroids in each subspace. \texttt{Flash} employs shuffle operations to extract partial distances using neighbors' codewords.
+
+\subsubsection{\textbf{Cost Analysis}}
+In the CA stage, the number of memory accesses in the original HNSW algorithm is $O(R\cdot log(n))$. In our optimized implementation, the number of memory accesses is reduced to $O(log(n))$.
+For each distance computation using SIMD acceleration, the number of register loads in the original HNSW is $\frac{32\cdot D}{U}$, while in our implementation it is reduced to $\frac{M_{F}\cdot H}{U}$. With $D = 768$, $U = 128$, $M_F = 16$, and $H = 8$, the number of register loads required for a distance computation in the original HNSW is 192, whereas in our optimized version, it is reduced to just 1.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% DISCUSSION
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Discussion}
+\label{sec: summary}
+Based on our research, we highlight three notable findings:
+
+(1) \textsf{A compact coding method that significantly enhances search performance may not be suitable for index construction.} Recent research has integrated compact coding techniques, such as PQ, into the search process while preserving the original HNSW index construction. This approach improves search performance but incurs additional indexing time. The index construction process presents greater challenges due to its more complex execution logic relative to the search procedure. Consequently, directly applying existing compact coding methods to HNSW construction may not yield substantial improvements in indexing speed.
+
+
+(2) \textsf{Reducing more dimensions may bring higher accuracy.} While it might seem intuitive that preserving more dimensions during vector dimensionality reduction would increase accuracy, focusing on principal components is advisable when vector representation is constrained by limited bit allocation. This approach reduces the impact of less significant components, which tend to suffer from poor bit usage.
+
+(3) \textsf{Encoding vectors and distances with a tiny amount of bits to align with hardware constraints may yield substantial benefits.} In compact coding methods, fewer bits typically enhance efficiency but may compromise accuracy, while more bits can improve accuracy at the cost of efficiency. With tailored hardware optimizations, using fewer bits may achieve a better balance than the original optimal counts.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% CONCLUSION
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Conclusion}
+\label{sec: conclusion}
+In this paper, we investigate the index construction efficiency of graph-based ANNS methods on modern CPUs, using the representative HNSW index. We identify that low construction efficiency arises from high memory access latency and suboptimal arithmetic operation efficiency in distance computations. We develop three baseline methods incorporating existing compact coding techniques into the HNSW construction process, yielding valuable lessons. This leads to the design of \texttt{Flash}, tailored for the HNSW construction process. \texttt{Flash} reduces random memory accesses and leverages SIMD instructions, improving cache hits and arithmetic operations. Extensive evaluations confirm \texttt{Flash}'s superiority in accelerating graph indexing while maintaining or enhancing search performance. We also apply \texttt{Flash} to other graph indexes, optimized HNSW implementations, and various SIMD instruction sets to verify its generality.
+
+\bibliographystyle{ACM-Reference-Format}
+\bibliography{myref}
+
+\end{document}

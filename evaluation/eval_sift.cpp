@@ -3,10 +3,10 @@
 #include "../include/cphnsw/distance/hamming.hpp"
 #include "datasets/dataset_loader.hpp"
 #include "metrics/recall.hpp"
+#include "utils/common.hpp"
 #include <iostream>
 #include <iomanip>
 #include <chrono>
-#include <thread>
 #include <cmath>
 #include <algorithm>
 #include <random>
@@ -136,51 +136,7 @@ void check_correlation(
  * 2. Recompute ground truth using cosine similarity (dot product on normalized vectors)
  */
 
-void print_system_info() {
-    std::cout << "=== System Information ===\n";
-    std::cout << "Hardware threads: " << std::thread::hardware_concurrency() << "\n";
-
-#ifdef _OPENMP
-    std::cout << "OpenMP threads: " << omp_get_max_threads() << "\n";
-#else
-    std::cout << "OpenMP: DISABLED (ground truth will be slow!)\n";
-#endif
-
-    std::cout << "Compilation: ";
-#ifdef __AVX512F__
-    std::cout << "AVX-512 ";
-#endif
-#ifdef __AVX2__
-    std::cout << "AVX2 ";
-#endif
-    std::cout << "\n\n";
-}
-
-/**
- * Normalize vectors to unit length (L2 normalization).
- * SIFT vectors are 0-255 histograms, this converts them for cosine similarity.
- */
-void normalize_vectors(std::vector<Float>& vecs, size_t dim) {
-    size_t n = vecs.size() / dim;
-
-#ifdef _OPENMP
-    #pragma omp parallel for
-#endif
-    for (size_t i = 0; i < n; ++i) {
-        Float* v = &vecs[i * dim];
-        Float norm_sq = 0;
-        for (size_t j = 0; j < dim; ++j) {
-            norm_sq += v[j] * v[j];
-        }
-        Float norm = std::sqrt(norm_sq);
-        if (norm > 1e-10f) {
-            Float inv_norm = 1.0f / norm;
-            for (size_t j = 0; j < dim; ++j) {
-                v[j] *= inv_norm;
-            }
-        }
-    }
-}
+// print_system_info() and normalize_vectors() now in utils/common.hpp and datasets/dataset_loader.hpp
 
 /**
  * Compute ground truth using cosine similarity (dot product on normalized vectors).
@@ -663,8 +619,8 @@ int main(int argc, char** argv) {
     std::cout << "Normalizing vectors to unit length...\n";
     Timer timer;
     timer.start();
-    normalize_vectors(base_vectors, base_dim);
-    normalize_vectors(query_vectors, query_dim);
+    normalize_vectors(base_vectors.data(), base_count, base_dim);
+    normalize_vectors(query_vectors.data(), query_count, query_dim);
     std::cout << "  Normalization complete in " << std::fixed << std::setprecision(1)
               << timer.elapsed_ms() << " ms\n\n";
 

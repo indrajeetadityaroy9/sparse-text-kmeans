@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../core/types.hpp"
+#include "../core/debug.hpp"
 #include "../graph/flat_graph.hpp"
 #include "../quantizer/cp_encoder.hpp"
 #include "../algorithms/insert.hpp"
@@ -10,7 +11,6 @@
 #include <atomic>
 #include <queue>
 #include <cstring>
-#include <iostream>
 #include <numeric>
 #include <algorithm>
 
@@ -165,17 +165,16 @@ public:
         // PHASE 1: PRE-ALLOCATION (Sequential)
         // Prevents vector reallocations during parallel phase
         // ============================================
-        std::cerr << "[DEBUG] Phase 1: Pre-allocating for " << count << " vectors...\n";
+        CPHNSW_DEBUG_PHASE(1, "Pre-allocating for " << count << " vectors");
         original_vectors_.resize((start_id + count) * dim);
         graph_.reserve_nodes(start_id + count);
-        std::cerr << "[DEBUG] Phase 1 complete\n";
 
         // ============================================
         // PHASE 2: INITIALIZATION (Parallel - data copy & encode)
         // Utilizes memory bandwidth before graph logic starts
         // CRITICAL: Uses thread-local buffers to avoid data corruption!
         // ============================================
-        std::cerr << "[DEBUG] Phase 2: Encoding " << count << " vectors...\n";
+        CPHNSW_DEBUG_PHASE(2, "Encoding " << count << " vectors");
         std::vector<CPQuery<ComponentT, K>> queries(count);
         std::vector<LayerLevel> levels(count);
 
@@ -222,11 +221,10 @@ public:
         // PHASE 3: NODE CREATION (Sequential)
         // All nodes must exist before linking phase
         // ============================================
-        std::cerr << "[DEBUG] Phase 2 complete. Phase 3: Creating " << count << " nodes...\n";
+        CPHNSW_DEBUG_PHASE(3, "Creating " << count << " nodes");
         for (size_t i = 0; i < count; ++i) {
             graph_.add_node(queries[i].primary_code, levels[i]);
         }
-        std::cerr << "[DEBUG] Phase 3 complete\n";
 
         // ============================================
         // PHASE 3b: BOOTSTRAP (Sequential)
@@ -234,7 +232,7 @@ public:
         // Uses insert_hybrid for guaranteed connectivity.
         // ============================================
         size_t bootstrap_count = std::min(static_cast<size_t>(1000), count);
-        std::cerr << "[DEBUG] Phase 3b: Bootstrap " << bootstrap_count << " nodes (sequential)...\n";
+        CPHNSW_DEBUG("Bootstrap " << bootstrap_count << " nodes (sequential)");
 
         for (size_t i = 0; i < bootstrap_count; ++i) {
             NodeId id = static_cast<NodeId>(start_id + i);
@@ -253,7 +251,7 @@ public:
         // causing all threads to fight over the same hub node locks.
         // Shuffling spreads contention across the entire graph.
         // ============================================
-        std::cerr << "[DEBUG] Phase 3b complete. Phase 4: Shuffled parallel linking...\n";
+        CPHNSW_DEBUG_PHASE(4, "Shuffled parallel linking");
         size_t remaining = count - bootstrap_count;
 
         // Create shuffled indices for parallel phase
@@ -264,7 +262,7 @@ public:
         std::mt19937_64 shuffle_rng(params_.seed + 12345);
         std::shuffle(shuffled_indices.begin(), shuffled_indices.end(), shuffle_rng);
 
-        std::cerr << "[DEBUG] Processing " << remaining << " nodes (shuffled)\n";
+        CPHNSW_DEBUG("Processing " << remaining << " nodes (shuffled)");
 
         std::atomic<size_t> progress_counter{0};
 
@@ -282,19 +280,20 @@ public:
 
             // Progress reporting (every 5000 nodes)
             size_t done = progress_counter.fetch_add(1) + 1;
-            if (done % 5000 == 0) {
-                std::cerr << "[DEBUG] Inserted " << done << "/" << remaining << "\n";
-            }
+            CPHNSW_DEBUG_PROGRESS(done, remaining, 5000);
         }
 
         // ============================================
-        // PHASE 5: CONNECTIVITY REPAIR (SKIPPED FOR SPEED)
+        // PHASE 5: CONNECTIVITY REPAIR (OPT-IN)
         // With shuffled insertion, most nodes should be connected.
-        // Repair can be expensive on large graphs.
+        // Enable with -DCPHNSW_ENABLE_CONNECTIVITY_REPAIR for production.
         // ============================================
-        // TODO: Re-enable for production use
-        // repair_connectivity(start_id, count, queries, vecs);
-        std::cerr << "[DEBUG] Phase 5: Skipping connectivity repair for speed\n";
+#ifdef CPHNSW_ENABLE_CONNECTIVITY_REPAIR
+        CPHNSW_DEBUG_PHASE(5, "Running connectivity repair");
+        repair_connectivity(start_id, count, queries, vecs);
+#else
+        CPHNSW_DEBUG_PHASE(5, "Skipping connectivity repair (enable with CPHNSW_ENABLE_CONNECTIVITY_REPAIR)");
+#endif
 
         // Update entry point if any node achieved higher level
         for (size_t i = 0; i < count; ++i) {
@@ -556,12 +555,15 @@ private:
         return params;
     }
 
+#ifdef CPHNSW_ENABLE_CONNECTIVITY_REPAIR
     /**
      * Repair connectivity by connecting isolated components.
      *
      * After parallel construction, some nodes may be disconnected due to
      * blind spots. This pass finds those nodes and connects them to the
      * main component using true distance search.
+     *
+     * Enable with -DCPHNSW_ENABLE_CONNECTIVITY_REPAIR compile flag.
      */
     void repair_connectivity(size_t start_id, size_t count,
                             const std::vector<CPQuery<ComponentT, K>>& /* queries */,
@@ -681,6 +683,7 @@ private:
             }
         }
     }
+#endif  // CPHNSW_ENABLE_CONNECTIVITY_REPAIR
 
     /**
      * Generate level from node ID (deterministic, thread-safe).

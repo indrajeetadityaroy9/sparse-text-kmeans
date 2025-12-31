@@ -16,9 +16,6 @@ namespace cphnsw {
  * A candidate is accepted only if it's closer to the base than
  * to any already-selected neighbor.
  *
- * CRITICAL UPDATE: Uses asymmetric distance from query magnitudes
- * for proper continuous gradient comparison.
- *
  * This heuristic is critical for graph connectivity - it prevents
  * clustering of neighbors and ensures the graph can navigate
  * across different regions of the space.
@@ -30,76 +27,108 @@ public:
     using Code = CPCode<ComponentT, K>;
     using Query = CPQuery<ComponentT, K>;
 
+private:
+    // =========================================================================
+    // Core Diversity Heuristic (shared implementation)
+    // =========================================================================
+
     /**
-     * Select neighbors using the diversity heuristic with asymmetric distance.
+     * Apply diversity heuristic to sorted candidates.
      *
-     * @param base_query    Query of the base node (with magnitudes)
-     * @param candidates    Candidate neighbors (modified: will be sorted)
-     * @param M             Maximum neighbors to select
-     * @param keep_pruned   Keep pruned connections for robustness
-     * @param graph         HNSW graph
-     * @return              Selected neighbor IDs
+     * Template parameters allow different distance computations and result types.
+     *
+     * @param candidates      Sorted candidates (ascending by distance to base)
+     * @param M               Maximum neighbors to select
+     * @param keep_pruned     Include pruned candidates if below M
+     * @param compute_dist    Functor: (candidate_id, selected_id) -> float
+     * @param emit_result     Functor: (candidate) -> void (adds to result)
+     * @param result_size     Functor: () -> size_t (current result size)
      */
-    static std::vector<NodeId> select(
-        const Query& base_query,
-        std::vector<SearchResult>& candidates,
+    template<typename DistFunc, typename EmitFunc, typename SizeFunc>
+    static void apply_diversity_heuristic(
+        const std::vector<SearchResult>& candidates,
         size_t M,
         bool keep_pruned,
-        const Graph& graph) {
-
-        // Sort candidates by distance to base (ascending)
-        std::sort(candidates.begin(), candidates.end());
-
-        std::vector<NodeId> result;
-        result.reserve(M);
+        DistFunc compute_dist,
+        EmitFunc emit_result,
+        SizeFunc result_size) {
 
         std::vector<SearchResult> discarded;
 
         for (const auto& candidate : candidates) {
-            if (result.size() >= M) break;
+            if (result_size() >= M) break;
 
-            // Check diversity: is candidate closer to base than to any selected?
             bool is_good = true;
 
-            for (NodeId selected_id : result) {
-                const auto& selected_code = graph.get_code(selected_id);
-                const auto& candidate_code = graph.get_code(candidate.id);
-
-                // Use symmetric Hamming for inter-candidate comparison
-                // (We don't have magnitudes for stored nodes)
-                HammingDist dist_to_selected = hamming_distance(candidate_code, selected_code);
-
-                // Diversity heuristic: reject if closer to existing neighbor
-                // Compare with asymmetric distance to base (candidate.distance)
-                if (static_cast<AsymmetricDist>(dist_to_selected) < candidate.distance) {
+            // Check diversity against all selected neighbors
+            for (size_t i = 0; i < result_size() && is_good; ++i) {
+                float dist_to_selected = compute_dist(candidate, i);
+                if (dist_to_selected < candidate.distance) {
                     is_good = false;
-                    break;
                 }
             }
 
             if (is_good) {
-                result.push_back(candidate.id);
+                emit_result(candidate);
             } else {
                 discarded.push_back(candidate);
             }
         }
 
-        // Optionally add pruned connections for robustness
-        if (keep_pruned && result.size() < M) {
+        // Add pruned connections for robustness
+        if (keep_pruned) {
             std::sort(discarded.begin(), discarded.end());
             for (const auto& d : discarded) {
-                if (result.size() >= M) break;
-                result.push_back(d.id);
+                if (result_size() >= M) break;
+                emit_result(d);
             }
         }
+    }
+
+public:
+    // =========================================================================
+    // select() - Diversity heuristic with CP/Hamming distance
+    // =========================================================================
+
+    /**
+     * Select neighbors using the diversity heuristic with asymmetric distance.
+     *
+     * Uses Hamming distance for inter-candidate comparison since stored nodes
+     * don't have magnitude information.
+     */
+    static std::vector<NodeId> select(
+        const Query& /* base_query */,
+        std::vector<SearchResult>& candidates,
+        size_t M,
+        bool keep_pruned,
+        const Graph& graph) {
+
+        std::sort(candidates.begin(), candidates.end());
+
+        std::vector<NodeId> result;
+        result.reserve(M);
+
+        auto compute_dist = [&](const SearchResult& candidate, size_t selected_idx) -> float {
+            const auto& candidate_code = graph.get_code(candidate.id);
+            const auto& selected_code = graph.get_code(result[selected_idx]);
+            return static_cast<float>(hamming_distance(candidate_code, selected_code));
+        };
+
+        auto emit = [&](const SearchResult& c) { result.push_back(c.id); };
+        auto size = [&]() { return result.size(); };
+
+        apply_diversity_heuristic(candidates, M, keep_pruned, compute_dist, emit, size);
 
         return result;
     }
 
+    // =========================================================================
+    // select_simple() - Top-M without diversity (for shrink operations)
+    // =========================================================================
+
     /**
      * Simple selection without diversity heuristic (just top-M by distance).
      * Faster but may produce less connected graphs.
-     * Used for shrink operations where we don't have query magnitudes.
      */
     static std::vector<NodeId> select_simple(
         std::vector<SearchResult>& candidates,
@@ -117,22 +146,15 @@ public:
         return result;
     }
 
+    // =========================================================================
+    // select_with_true_distance() - Full float verification
+    // =========================================================================
+
     /**
      * HYBRID CONSTRUCTION: Select neighbors using TRUE cosine distance.
      *
-     * Uses actual float vectors for precise distance computation,
-     * ensuring correct graph topology (100% connectivity).
-     *
-     * CRITICAL: Updates ALL candidate distances to true cosine before selection.
-     * Do NOT mix CP estimates with true distances!
-     *
-     * @param new_vec         Original float vector being inserted
-     * @param all_vectors     All original vectors (flat array, dim * num_nodes)
-     * @param dim             Vector dimension
-     * @param candidates      Candidate neighbors (distances will be recomputed)
-     * @param M               Maximum neighbors to select
-     * @param keep_pruned     Keep pruned connections for robustness
-     * @return                Selected neighbor IDs
+     * Recomputes ALL candidate distances using float vectors for precise
+     * distance computation, ensuring correct graph topology.
      */
     static std::vector<NodeId> select_with_true_distance(
         const Float* new_vec,
@@ -142,66 +164,29 @@ public:
         size_t M,
         bool keep_pruned) {
 
-        // CRITICAL: Recompute ALL candidate distances using true cosine
-        for (auto& c : candidates) {
-            const Float* node_vec = &all_vectors[c.id * dim];
-            Float true_dot = 0;
-            for (size_t d = 0; d < dim; ++d) {
-                true_dot += new_vec[d] * node_vec[d];
-            }
-            // Negative dot product: higher similarity = lower distance
-            c.distance = -true_dot;
-        }
-
-        // Sort candidates by TRUE distance (ascending)
+        // Recompute all distances using true cosine
+        recompute_true_distances(new_vec, all_vectors, dim, candidates);
         std::sort(candidates.begin(), candidates.end());
 
         std::vector<NodeId> result;
         result.reserve(M);
 
-        std::vector<SearchResult> discarded;
+        auto compute_dist = [&](const SearchResult& candidate, size_t selected_idx) -> float {
+            return compute_true_distance(
+                all_vectors, dim, candidate.id, result[selected_idx]);
+        };
 
-        for (const auto& candidate : candidates) {
-            if (result.size() >= M) break;
+        auto emit = [&](const SearchResult& c) { result.push_back(c.id); };
+        auto size = [&]() { return result.size(); };
 
-            // Check diversity: is candidate closer to base than to any selected?
-            bool is_good = true;
-
-            for (NodeId selected_id : result) {
-                // Compute TRUE distance between candidate and selected
-                const Float* cand_vec = &all_vectors[candidate.id * dim];
-                const Float* sel_vec = &all_vectors[selected_id * dim];
-                Float dot = 0;
-                for (size_t d = 0; d < dim; ++d) {
-                    dot += cand_vec[d] * sel_vec[d];
-                }
-                Float dist_to_selected = -dot;
-
-                // Diversity heuristic: reject if closer to existing neighbor
-                if (dist_to_selected < candidate.distance) {
-                    is_good = false;
-                    break;
-                }
-            }
-
-            if (is_good) {
-                result.push_back(candidate.id);
-            } else {
-                discarded.push_back(candidate);
-            }
-        }
-
-        // Optionally add pruned connections for robustness
-        if (keep_pruned && result.size() < M) {
-            std::sort(discarded.begin(), discarded.end());
-            for (const auto& d : discarded) {
-                if (result.size() >= M) break;
-                result.push_back(d.id);
-            }
-        }
+        apply_diversity_heuristic(candidates, M, keep_pruned, compute_dist, emit, size);
 
         return result;
     }
+
+    // =========================================================================
+    // select_with_true_distance_cached() - Optimized with cached distances
+    // =========================================================================
 
     /**
      * Select neighbors using true distance WITH cached distances.
@@ -209,17 +194,7 @@ public:
      * OPTIMIZATION: Returns (NodeId, distance) pairs to enable O(1) pruning
      * in the graph by caching edge distances alongside links.
      *
-     * BANDWIDTH OPTIMIZATION: Only verify top 2*M candidates with float math.
-     * Since CP estimator has 97% correlation, candidates beyond 2*M are unlikely
-     * to be selected anyway. This reduces memory bandwidth by 50-80%.
-     *
-     * @param new_vec         Query/new vector
-     * @param all_vectors     All vectors in the dataset
-     * @param dim             Vector dimension
-     * @param candidates      Candidate neighbors (distances will be recomputed)
-     * @param M               Maximum neighbors to select
-     * @param keep_pruned     Keep pruned connections for robustness
-     * @return                Selected (neighbor ID, distance) pairs
+     * BANDWIDTH OPTIMIZATION: Only verifies top 2*M candidates with float math.
      */
     static std::vector<std::pair<NodeId, float>> select_with_true_distance_cached(
         const Float* new_vec,
@@ -229,21 +204,88 @@ public:
         size_t M,
         bool keep_pruned) {
 
-        // BANDWIDTH OPTIMIZATION: Limit float verification to top 2*M candidates
-        // CP estimator has 97% correlation - beyond 2*M, candidates are unlikely winners
-        size_t verify_limit = std::min(candidates.size(), M * 2);
-
-        // First sort by CP distance to identify top candidates
+        // Bandwidth optimization: limit to top 2*M by CP distance
         std::sort(candidates.begin(), candidates.end());
-
-        // Truncate to reduce float math and cache misses
+        size_t verify_limit = std::min(candidates.size(), M * 2);
         if (candidates.size() > verify_limit) {
             candidates.resize(verify_limit);
         }
 
-        // Recompute distances using true cosine (with prefetching)
+        // Recompute distances with prefetching
+        recompute_true_distances_prefetch(new_vec, all_vectors, dim, candidates);
+        std::sort(candidates.begin(), candidates.end());
+
+        std::vector<std::pair<NodeId, float>> result;
+        result.reserve(M);
+
+        auto compute_dist = [&](const SearchResult& candidate, size_t selected_idx) -> float {
+            return compute_true_distance(
+                all_vectors, dim, candidate.id, result[selected_idx].first);
+        };
+
+        auto emit = [&](const SearchResult& c) {
+            result.emplace_back(c.id, c.distance);
+        };
+        auto size = [&]() { return result.size(); };
+
+        apply_diversity_heuristic(candidates, M, keep_pruned, compute_dist, emit, size);
+
+        return result;
+    }
+
+private:
+    // =========================================================================
+    // Distance Computation Helpers
+    // =========================================================================
+
+    /**
+     * Compute true cosine distance between two stored vectors.
+     */
+    static float compute_true_distance(
+        const std::vector<Float>& all_vectors,
+        size_t dim,
+        NodeId id_a,
+        NodeId id_b) {
+
+        const Float* vec_a = &all_vectors[id_a * dim];
+        const Float* vec_b = &all_vectors[id_b * dim];
+        Float dot = 0;
+        for (size_t d = 0; d < dim; ++d) {
+            dot += vec_a[d] * vec_b[d];
+        }
+        return -dot;  // Negative for distance ordering
+    }
+
+    /**
+     * Recompute all candidate distances using true cosine.
+     */
+    static void recompute_true_distances(
+        const Float* new_vec,
+        const std::vector<Float>& all_vectors,
+        size_t dim,
+        std::vector<SearchResult>& candidates) {
+
+        for (auto& c : candidates) {
+            const Float* node_vec = &all_vectors[c.id * dim];
+            Float true_dot = 0;
+            for (size_t d = 0; d < dim; ++d) {
+                true_dot += new_vec[d] * node_vec[d];
+            }
+            c.distance = -true_dot;
+        }
+    }
+
+    /**
+     * Recompute distances with prefetching for better cache utilization.
+     */
+    static void recompute_true_distances_prefetch(
+        const Float* new_vec,
+        const std::vector<Float>& all_vectors,
+        size_t dim,
+        std::vector<SearchResult>& candidates) {
+
         for (size_t i = 0; i < candidates.size(); ++i) {
-            // Prefetch 4 steps ahead to hide memory latency
+            // Prefetch 4 steps ahead
             if (i + 4 < candidates.size()) {
                 const char* prefetch_addr = reinterpret_cast<const char*>(
                     &all_vectors[candidates[i + 4].id * dim]);
@@ -257,58 +299,8 @@ public:
             for (size_t d = 0; d < dim; ++d) {
                 true_dot += new_vec[d] * node_vec[d];
             }
-            // Negative dot product: higher similarity = lower distance
             candidates[i].distance = -true_dot;
         }
-
-        // Re-sort by TRUE distance (ascending)
-        std::sort(candidates.begin(), candidates.end());
-
-        std::vector<std::pair<NodeId, float>> result;
-        result.reserve(M);
-
-        std::vector<SearchResult> discarded;
-
-        for (const auto& candidate : candidates) {
-            if (result.size() >= M) break;
-
-            // Check diversity: is candidate closer to base than to any selected?
-            bool is_good = true;
-
-            for (const auto& [selected_id, _] : result) {
-                // Compute TRUE distance between candidate and selected
-                const Float* cand_vec = &all_vectors[candidate.id * dim];
-                const Float* sel_vec = &all_vectors[selected_id * dim];
-                Float dot = 0;
-                for (size_t d = 0; d < dim; ++d) {
-                    dot += cand_vec[d] * sel_vec[d];
-                }
-                Float dist_to_selected = -dot;
-
-                // Diversity heuristic: reject if closer to existing neighbor
-                if (dist_to_selected < candidate.distance) {
-                    is_good = false;
-                    break;
-                }
-            }
-
-            if (is_good) {
-                result.emplace_back(candidate.id, candidate.distance);
-            } else {
-                discarded.push_back(candidate);
-            }
-        }
-
-        // Optionally add pruned connections for robustness
-        if (keep_pruned && result.size() < M) {
-            std::sort(discarded.begin(), discarded.end());
-            for (const auto& d : discarded) {
-                if (result.size() >= M) break;
-                result.emplace_back(d.id, d.distance);
-            }
-        }
-
-        return result;
     }
 };
 

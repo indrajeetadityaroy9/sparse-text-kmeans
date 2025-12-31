@@ -1,0 +1,876 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in,letterpaper]{geometry}
+\usepackage{lmodern}
+\usepackage{url}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage[english]{babel}
+\usepackage{amsmath,amsthm,amssymb}
+\usepackage{thmtools,thm-restate}
+\usepackage{mathtools}
+\usepackage[noend]{algpseudocode}
+\usepackage{algorithm}
+\usepackage{graphicx}
+\usepackage{comment}
+\usepackage{color}
+\usepackage{booktabs}
+\usepackage{enumitem}
+\usepackage{fixltx2e}
+\usepackage{etoolbox}
+\usepackage{subcaption}
+\usepackage{tikz}
+\usepackage{pgfplots}
+\usepackage[textsize=scriptsize]{todonotes}
+\usepackage{microtype}
+\usepackage[hidelinks]{hyperref}
+\usepackage{setspace}
+
+\setlength{\marginparwidth}{3cm}
+
+% LaTeX definitions
+\newcommand{\R}{\ensuremath{\mathbb{R}}}
+\newcommand{\Rbb}{\mathbb{R}}
+\newcommand{\eps}{\varepsilon}
+\DeclareMathOperator{\vol}{vol}
+\newtheorem{theorem}{Theorem}
+\newtheorem{lemma}{Lemma}
+\DeclareMathOperator*{\argmax}{arg\,max}
+\DeclareMathOperator*{\argmin}{arg\,min}
+\newcommand{\specialcell}[2][c]{\begin{tabular}[#1]{@{}c@{}}#2\end{tabular}}
+\newcommand{\Nbb}{\mathbb{N}}
+\newtheorem{claim}{Claim}
+\newtheorem{corollary}{Corollary}
+\newtheorem{definition}{Definition}
+\newcommand{\Rc}{\mathcal{R}}
+
+\title{Practical and Optimal LSH for Angular Distance}
+
+\author{
+Alexandr Andoni\thanks{The authors are listed in alphabetical order.} \\
+Columbia University \\
+\and
+Piotr Indyk \\
+MIT \\
+\and
+Thijs Laarhoven \\
+TU Eindhoven \\
+\and
+Ilya Razenshteyn \\
+MIT \\
+\and
+Ludwig Schmidt \\
+MIT \\
+}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+  We show the existence of a Locality-Sensitive Hashing (LSH) family for the angular distance that
+ yields an approximate Near Neighbor Search algorithm with the asymptotically optimal  running time exponent.
+ Unlike earlier algorithms with this property (e.g.,  Spherical LSH~\cite{AINR-subLSH,AR15}), our algorithm is also practical, improving upon the well-studied hyperplane LSH~\cite{Cha02} in practice.
+We also introduce a \emph{multiprobe} version of this algorithm, and conduct experimental evaluation  on real and synthetic data sets.
+
+  We complement the above positive results with a fine-grained lower bound for the quality of any LSH family
+  for angular distance.
+  Our lower bound implies that the above LSH family exhibits a trade-off between evaluation time and quality that is close to optimal
+  for a natural class of LSH functions.
+\end{abstract}
+
+\onehalfspace
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% INTRODUCTION
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Introduction}
+Nearest neighbor search is a key algorithmic problem with applications in several fields including computer vision, information retrieval, and machine learning~\cite{nnlv}.
+Given a set of $n$ points $P \subset \R^d$, the goal is to build a data structure that answers nearest neighbor queries efficiently: for a given query point $q \in \R^d$, find the point $p \in P$ that is closest to $q$ under an appropriately chosen distance metric.
+The main algorithmic design goals are usually a fast query time, a small memory footprint, and---in the approximate setting---a good quality of the returned solution.
+
+There is a wide range of algorithms for nearest neighbor search based
+on techniques such as space partitioning with indexing, as well as
+dimension reduction or sketching~\cite{samet2006foundations}.
+A popular method for point sets in high-dimensional spaces is Locality-Sensitive Hashing (LSH)~\cite{HIM12,Cha02}, an approach that offers a \emph{provably} sub-linear query time and sub-quadratic space complexity, and
+has been shown to achieve  good empirical performance in a variety of applications~\cite{nnlv}.
+The method relies on the notion of \emph{locality-sensitive hash functions}.
+Intuitively, a hash function is locality-sensitive if its probability of collision is higher for ``nearby'' points than for points that are ``far apart''.
+More formally, two points are nearby if their distance is at most
+$r_1$, and they are far apart if their distance is at
+least~$r_2=c \cdot r_1$, where $c > 1$ quantifies the gap between ``near'' and ``far''.
+The quality of a hash function is characterized by two key parameters: $p_1$ is the collision probability for nearby points, and~$p_2$ is the collision probability for points that are far apart.
+The gap between $p_1$ and $p_2$ determines how ``sensitive'' the hash function is to changes in distance, and this property is captured by the parameter $\rho=\frac{\log 1 / p_1}{\log 1 / p_2}$, which can usually be expressed as a function of the distance gap $c$.
+The problem of designing good locality-sensitive hash functions and LSH-based efficient nearest neighbor search algorithms has attracted significant attention over the last few years.
+
+In this paper, we focus on LSH for the Euclidean distance \emph{on the unit sphere}, which is an important special case for several reasons.
+First, the spherical case is relevant in practice: Euclidean distance on a sphere corresponds to the \emph{angular distance} or \emph{cosine similarity}, which are commonly used in applications such as comparing image feature vectors \cite{JDS11}, speaker representations \cite{SSL14}, and tf-idf data sets \cite{sundaram2013streaming}.
+Moreover, on the theoretical side, the paper \cite{AR15} shows a reduction from Nearest Neighbor Search in the \emph{entire} Euclidean space to the spherical case.
+These connections lead to a natural question: what are good LSH families for this special case?
+
+On the theoretical side, the recent work of \cite{AINR-subLSH, AR15} gives the best known provable guarantees for LSH-based nearest neighbor search w.r.t.\ the Euclidean distance on the unit sphere.
+Specifically, their algorithm has a query time of $O(n^\rho)$ and
+space complexity of $O(n^{1 +  \rho})$ for $\rho= \frac{1}{2 c^2 -
+  1}.$\footnote{This running time is known to be
+  essentially optimal for a large class of algorithms~\cite{Dubiner, ar15lower}.}
+E.g., for the approximation factor $c=2$, the algorithm achieves a query time of $n^{1/7+o(1)}$.
+At the heart of the algorithm is an LSH scheme called {\em Spherical LSH}, which works for unit vectors.
+Its key property is that it can distinguish between distances $r_1= \sqrt{2}/c$ and $r_2=\sqrt{2}$ with probabilities yielding $\rho =  \frac{1}{2 c^2 -1}$ (the formula for the full range of distances is more complex and given in Section~\ref{sec:crossPoly}).
+Unfortunately, the scheme as described in the paper is not applicable in practice as it is based on rather complex hash functions that are very time consuming to evaluate.
+E.g., simply evaluating a~single hash function from \cite{AR15} can take more time than a linear scan over $10^6$ points.
+Since an LSH data structure contains many individual hash functions, using their scheme would be slower than a~simple linear scan over all points in $P$ unless the number of points $n$ is extremely large.
+
+
+On the practical side, the hyperplane LSH introduced in the influential work of Charikar \cite{Cha02} has worse theoretical guarantees, but works well in practice.
+Since the hyperplane LSH can be implemented very efficiently, it is the standard hash function in practical LSH-based nearest neighbor algorithms\footnote{Note that if the data points are {\em binary}, more efficient LSH schemes exist~\cite{shrivastava2012fast,  shrivastava2014densifying}. However, in this paper we consider algorithms for general (non-binary) vectors.}  and the resulting implementations has been shown to improve over a linear scan on real data by multiple orders of magnitude~\cite{lv2007multi,sundaram2013streaming}.
+
+The aforementioned discrepancy between the theory and practice of LSH raises an important question: is there a locality-sensitive hash function with {\em optimal} guarantees that also improves over the hyperplane LSH in practice?
+
+In this paper we show that there is a family of locality-sensitive hash functions that achieves both objectives.
+Specifically, the hash functions match the theoretical guarantee of Spherical LSH from \cite{AR15} and, when combined with additional techniques, give better experimental results than the hyperplane LSH.
+More specifically, our contributions are:
+
+\paragraph{Theoretical guarantees for the cross-polytope LSH.} We show that a hash function based on randomly rotated cross-polytopes (i.e., unit balls of the $\ell_1$-norm) achieves the same parameter $\rho$ as the Spherical LSH scheme in \cite{AR15}, assuming data points are unit vectors.
+While the cross-polytope LSH family has been proposed by researchers before~\cite{terasawa2007spherical,eshghi2008locality} we give the first theoretical analysis of its performance.
+
+\paragraph{Fine-grained lower bound for cosine similarity LSH.}
+To highlight the difficulty of obtaining optimal {\em and} practical LSH schemes,
+we prove the first {\em non-asymptotic} lower bound on the trade-off
+between the collision probabilities $p_1$ and $p_2$.
+So far, the optimal LSH upper bound $\rho=\tfrac{1}{2c^2-1}$ (from
+\cite{AINR-subLSH, AR15} and cross-polytope from here) attain this bound only in
+the limit, as $p_1,p_2\to 0$. Very small~$p_1$ and~$p_2$ are undesirable
+since the hash evaluation time is often proportional to $1/p_2$. Our
+lower bound proves this is unavoidable: if we require $p_2$ to be
+large, $\rho$ has to be suboptimal.
+
+This result has two important implications for designing practical
+hash functions. First, it shows that the trade-offs achieved by the
+cross-polytope LSH and the scheme of \cite{AINR-subLSH, AR15} are essentially
+optimal.  Second, the lower bound guides design of future LSH
+functions: if one is to significantly improve upon the cross-polytope
+LSH, one has to design a hash function that is computed more efficiently than by explicitly
+enumerating its range (see Section~\ref{sec_lower} for a more detailed
+discussion).
+
+\paragraph{Multiprobe scheme for the cross-polytope LSH.} The space
+complexity of an LSH data structure is sub-\emph{quadratic}, but even
+this is often too large (i.e., strongly super-\emph{linear} in the
+number of points), and several methods have been proposed to address
+this issue.  Empirically, the most efficient scheme is
+multiprobe LSH~\cite{lv2007multi}, which leads to a significantly reduced memory
+footprint for the hyperplane LSH.  In order to make the cross-polytope
+LSH competitive in practice with the multiprobe hyperplane LSH, we propose a novel
+multiprobe scheme for the cross-polytope LSH.
+
+We complement these contributions with an experimental evaluation on both real and synthetic data (SIFT vectors, tf-idf data, and a random point set). In order to make the cross-polytope LSH practical, we combine it with fast pseudo-random rotations~\cite{AC09} via
+the Fast Hadamard Transform, and feature hashing~\cite{WDLSA09} to exploit sparsity of data.
+Our results show that for data sets with around $10^5$ to~$10^8$ points, our multiprobe variant of the cross-polytope LSH is up to $10\times$ faster than an efficient implementation of the hyperplane LSH, and up to $700\times$ faster than a linear scan.
+To the best of our knowledge, our combination of techniques provides the first ``exponent-optimal'' algorithm that empirically improves over the hyperplane LSH in terms of query time for an \emph{exact} nearest neighbor search.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% RELATED WORK
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\subsection{Related work}
+The cross-polytope LSH functions were originally proposed in~\cite{terasawa2007spherical}. However, the analysis in that paper was mostly experimental. Specifically, the probabilities $p_1$ and $p_2$ of the proposed LSH functions were estimated empirically using the Monte Carlo method. Similar hash functions were later proposed in~\cite{eshghi2008locality}. The latter paper also uses DFT to speed-up the random matrix-vector matrix multiplication operation. Both of the aforementioned papers consider only the {\em single-probe} algorithm.
+
+There are several works that show lower bounds on the quality of LSH hash functions~\cite{motwani2007lower,Dubiner,o2014optimal,ar15lower}. However, those papers provide only a lower bound on the  $\rho$ parameter for asymptotic values of $p_1$ and $p_2$, as opposed to an actual trade-off between these two quantities. In this paper we provide such a trade-off, with implications as outlined in the introduction.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% PRELIMINARIES
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Preliminaries}
+
+We use $\|.\|$ to denote the Euclidean (a.k.a. $\ell_2$) norm on $\Rbb^d$. We also use $S^{d-1}$ to denote the unit sphere in $\Rbb^d$ centered in the origin.
+The Gaussian distribution with mean zero and variance of one is denoted by $N(0, 1)$.
+Let $\mu$ be a normalized Haar measure on $S^{d-1}$  (that is, $\mu(S^{d-1}) = 1$).
+Note that $\mu$ it corresponds to the uniform distribution over
+$S^{d-1}$. We also let $u \sim S^{d-1}$ be a point sampled from $S^{d-1}$ uniformly at random.
+For $\eta \in \Rbb$ we denote
+$$
+\Phi_c(\eta) = \underset{X \sim N(0, 1)}{\mathrm{Pr}}[X \geq \eta] = \frac{1}{\sqrt{2 \pi}} \int_{\eta}^{\infty} e^{-t^2 / 2} \, dt.
+$$
+
+We will be interested in the Near Neighbor Search on the sphere $S^{d-1}$ with respect to the Euclidean distance.
+Note that the angular distance can be expressed via the Euclidean distance between normalized vectors, so our results
+apply to  the angular distance as well.
+
+\begin{definition}
+
+  Given an $n$-point dataset $P \subset S^{d-1}$ on the sphere, the goal
+  of the \emph{$(c, r)$-Approximate Near Neighbor problem (ANN)}
+  is to build a data structure that, given a query $q \in S^{d-1}$
+  with the promise that there exists a datapoint $p \in P$ with $\|p - q\| \leq r$,
+  reports a datapoint $p' \in P$ within distance $cr$ from $q$.
+\end{definition}
+
+\begin{definition}
+    We say that a hash family $\mathcal{H}$ on the sphere $S^{d-1}$ is
+    \emph{$(r_1, r_2, p_1, p_2)$-sensitive}, if
+    for every $p, q \in S^{d-1}$ one has
+    $\underset{h \sim \mathcal{H}}{\mathrm{Pr}}[h(x) = h(y)] \geq p_1$ if $\|x - y\| \leq r_1$,
+    and $\underset{h \sim \mathcal{H}}{\mathrm{Pr}}[h(x) = h(y)] \leq p_2$ if $\|x - y\| \geq r_2$,
+\end{definition}
+
+It is known~\cite{HIM12} that an \emph{efficient} $(r, cr, p_1, p_2)$-sensitive hash family implies
+a data structure for $(c, r)$-ANN with space $O(n^{1 + \rho}/p_1 + dn)$ and query time $O(d \cdot n^{\rho}/p_1)$,
+where $\rho = \frac{\log(1 / p_1)}{\log(1 / p_2)}$.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% CROSS-POLYTOPE LSH
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Cross-polytope LSH}
+\label{sec:crossPoly}
+
+In this section, we describe the cross-polytope LSH, analyze it, and show how to make it practical.
+First, we recall the definition of the cross-polytope LSH \cite{terasawa2007spherical}:
+Consider the following hash family $\mathcal{H}$ for points on a unit sphere $S^{d-1} \subset \Rbb^d$. Let $A \in \Rbb^{d \times d}$
+be a random matrix with i.i.d.\ Gaussian entries (``a random rotation'').
+To hash a point $x \in S^{d-1}$, we compute $y = Ax / \|Ax\| \in S^{d-1}$ and then find the point closest to $y$ from $\{\pm e_i\}_{1 \leq i \leq d}$, where $e_i$ is the $i$-th standard basis vector of $\Rbb^d$. We use the closest neighbor
+as a hash of $x$.
+
+The following theorem bounds the collision probability for two points under the above family $\mathcal{H}$.
+
+\begin{theorem}
+  \label{rho_upper}
+  Suppose that $p, q \in S^{d-1}$ are such that $\|p - q\| = \tau$, where $0 < \tau < 2$.
+  Then,
+  $$
+  \ln \frac{1}{\underset{h \sim \mathcal{H}}{\mathrm{Pr}}\bigl[h(p) = h(q)\bigr]} = \frac{\tau^2}{4 - \tau^2} \cdot \ln d + O_{\tau}(\ln \ln d) \; .
+  $$
+\end{theorem}
+Before we show how to prove this theorem, we briefly describe its implications.
+Theorem \ref{rho_upper} shows that the cross-polytope LSH achieves essentially the same bounds on the collision probabilities as the (theoretically)
+optimal LSH for the sphere from~\cite{AR15} (see Section ``Spherical LSH'' there). In particular, substituting the bounds from Theorem~\ref{rho_upper} for the cross-polytope LSH into the standard reduction from Near Neighbor Search to LSH~\cite{HIM12},
+we obtain the following data structure with sub-quadratic space and sublinear query time for Near Neighbor Search on a sphere.
+
+\begin{corollary}
+  The $(c, r)$-ANN on a unit sphere $S^{d-1}$ can be solved in space $O(n^{1 + \rho} + dn)$ and query time
+  $O(d \cdot n^{\rho})$, where
+  $
+  \rho = \frac{1}{c^2} \cdot \frac{4 - c^2 r^2}{4 - r^2} + o(1) \; .
+  $
+\end{corollary}
+
+We now outline the proof of Theorem~\ref{rho_upper}. For the full proof, see Appendix~\ref{app_upper}.
+
+Due to the spherical symmetry of Gaussians,
+we can assume that
+$p = e_1$ and $q = \alpha e_1 + \beta e_2$, where $\alpha, \beta$ are such that $\alpha^2 + \beta^2 = 1$ and
+$(\alpha - 1)^2 + \beta^2 = \tau^2$.
+Then, we expand the collision probability:
+\begin{align}
+\underset{h \sim \mathcal{H}}{\mathrm{Pr}}[h(p) = h(q)] & = 2d \cdot \underset{h \sim \mathcal{H}}{\mathrm{Pr}}[h(p) = h(q) = e_1]\nonumber
+\\& = 2d \cdot \underset{u, v \sim N(0, 1)^d}{\mathrm{Pr}}[\forall i \enspace |u_i| \leq u_1 \mbox{ and }
+  |\alpha u_i + \beta v_i| \leq \alpha u_1 + \beta v_1] \nonumber\\
+& = 2d \cdot \underset{X_1, Y_1}{\mathrm{E}}\left[\underset{X_2, Y_2}{\mathrm{Pr}}\Bigl[|X_2| \leq X_1 \mbox{ and }
+    |\alpha X_2 + \beta Y_2| \leq \alpha X_1 + \beta Y_1\Bigr]^{d - 1}\right],
+\label{prob_exp}
+\end{align}
+where $X_1, Y_1, X_2, Y_2 \sim N(0, 1)$. Indeed, the first step is due to the spherical symmetry of the hash family,
+the second step follows from the above discussion about replacing a random orthogonal matrix with a Gaussian one and that one can
+assume w.l.o.g. that $p = e_1$ and $q = \alpha e_1 + \beta e_2$; the last step is due to the independence of the entries of $u$ and $v$.
+
+Thus, proving Theorem~\ref{rho_upper} reduces to estimating the right-hand side of~(\ref{prob_exp}). Note that the probability
+$\mathrm{Pr}[|X_2| \leq X_1 \mbox{ and } |\alpha X_2 + \beta Y_2| \leq \alpha X_1 + \beta Y_1]$
+is equal to the Gaussian area of the planar set $S_{X_1, Y_1}$ shown in Figure~\ref{gaussian_set}.
+The latter is \emph{heuristically} equal to $1 - e^{-\Delta^2 / 2}$, where $\Delta$ is the distance from the origin to the complement of $S_{X_1, Y_1}$, which is easy to compute (see Appendix~\ref{app_gaussian} for the precise statement of this argument). Using this estimate,
+we compute~(\ref{prob_exp}) by taking the outer expectation.
+
+\subsection{Making the cross-polytope LSH practical}
+\label{sec:cppractical}
+As described above, the cross-polytope LSH is not quite practical. The main bottleneck is sampling, storing, and applying a random rotation.
+In particular, to multiply a random Gaussian matrix with a vector, we need time proportional to $d^2$, which is
+infeasible for large $d$.
+
+\paragraph{Pseudo-random rotations.} To rectify this issue, we instead use \emph{pseudo-random rotations}. Instead of multiplying
+an input vector $x$ by a random Gaussian matrix, we apply the following linear transformation:
+$x \mapsto H D_3 H D_2 H D_1 x$,
+where $H$ is the Hadamard transform, and $D_i$ for $i \in \{1, 2, 3\}$ is a random diagonal $\pm 1$-matrix. Clearly, this is an orthogonal
+transformation, which one can store in space $O(d)$ and evaluate in time $O(d \log d)$ using the Fast Hadamard Transform. This is similar to
+pseudo-random rotations used in the context of LSH~\cite{DKS11}, dimensionality reduction~\cite{AC09}, or compressed sensing~\cite{AR14}. While we
+are currently
+not aware
+how to prove rigorously that such pseudo-random rotations
+perform as
+well as the fully random ones, empirical evaluations show that
+three
+applications of $H D_i$
+are exactly equivalent to applying a true random rotation (when $d$ tends to infinity). We note
+that only {\em two} applications of $H D_i$ are not sufficient.
+
+\paragraph{Feature hashing.} While we can apply a pseudo-random rotation in time $O(d \log d)$,
+even this can be too slow. E.g., consider an input
+vector $x$ that is \emph{sparse}: the number of non-zero entries of
+$x$ is $s$ much smaller than $d$. In this case, we can evaluate the hyperplane LSH
+from~\cite{Cha02} in time $O(s)$, while computing the cross-polytope
+LSH (even with pseudo-random rotations) still takes time
+$O(d \log d)$. To speed-up the cross-polytope LSH for sparse vectors, we apply feature hashing~\cite{WDLSA09}: before performing a pseudo-random rotation, we reduce the dimension from
+$d$ to $d' \ll d$ by applying a linear map $x \mapsto Sx$, where $S$ is a random sparse $d' \times d$ matrix, whose columns have \emph{one} non-zero $\pm 1$ entry sampled uniformly. This way, the evaluation time becomes $O(s + d' \log d')$. \footnote{Note that one can apply Lemma~2 from the arXiv version of~\cite{WDLSA09}
+to claim that---after such a dimension reduction---the distance between \emph{any} two points remains sufficiently concentrated for the bounds
+from Theorem~\ref{rho_upper} to still hold (with $d$ replaced by~$d'$).}
+
+\paragraph{``Partial'' cross-polytope LSH.}
+\label{sec:partial_cp}
+In the above discussion, we defined the cross-polytope LSH as a hash family that returns the closest neighbor among
+$\{\pm e_i\}_{1 \leq i \leq d}$ as a hash (after a (pseudo-)random rotation). In principle, we do not have to consider all $d$ basis vectors when computing the closest neighbor.
+By restricting the hash to $d' \leq d$ basis vectors instead, Theorem~\ref{rho_upper} still holds for the new hash family (with $d$ replaced by $d'$) since the analysis is essentially dimension-free.
+This slight generalization of the cross-polytope LSH turns out to be useful for experiments (see Section~\ref{sec:experiments}).
+Note that the case $d' = 1$ corresponds to the hyperplane LSH.
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% LOWER BOUND
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Lower bound}
+\label{sec_lower}
+
+Let $\mathcal{H}$ be a hash family on $S^{d-1}$. For $0 < r_1 < r_2 < 2$ we would like to understand the trade-off between
+$p_1$ and $p_2$, where $p_1$ is the \emph{smallest} probability of collision under $\mathcal{H}$ for points at distance \emph{at most $r_1$}
+and $p_2$ is the \emph{largest} probability of collision for points at distance \emph{at least $r_2$}.
+We focus on the case $r_2 \approx \sqrt{2}$ because setting $r_2$ to $\sqrt{2} - o(1)$ (as $d$ tends to infinity) allows us to replace $p_2$ with the following quantity that is somewhat easier to handle:
+\[
+p_2^* = \underset{\substack{h \sim \mathcal{H}\\u, v \sim S^{d-1}}}{\mathrm{Pr}}[h(u) = h(v)].
+\]
+This quantity is at most $p_2 + o(1)$, since the distance between two random points on a unit sphere $S^{d-1}$ is tightly concentrated around $\sqrt{2}$.
+So for a hash family $\mathcal{H}$ on a unit sphere $S^{d-1}$, we would like to understand the upper bound on $p_1$ in terms of $p_2^*$
+and $0 < r_1 < \sqrt{2}$.
+
+For $0 \leq \tau \leq \sqrt{2}$ and $\eta \in \Rbb$, we define
+\[
+\Lambda(\tau, \eta) = \underset{X, Y \sim N(0, 1)}
+  {\mathrm{Pr}}\left[X \geq \eta \mbox{ and } \left(1 - \frac{\tau^2}{2}\right) \cdot X + \sqrt{\tau^2 - \frac{\tau^4}{4}} \cdot Y \geq \eta\right] \Bigm/ \underset{X \sim N(0, 1)}{\mathrm{Pr}}[X \geq \eta] \;.
+\]
+
+We are now ready to formulate the main result of this section.
+
+\begin{theorem}
+  \label{rho_lower}
+  Let $\mathcal{H}$ be a hash family on $S^{d-1}$ such that every function in $\mathcal{H}$ partitions the sphere into
+  at most $T$ parts of measure
+  at most $1/2$. Then we have
+  $
+  p_1 \leq \Lambda(r_1, \eta) + o(1)
+  $,
+  where $\eta \in \Rbb$ is such that $\Phi_c(\eta) = p_2^*$ and $o(1)$ is a quantity that depends on $T$ and $r_1$ and
+  tends to $0$ as $d$ tends to infinity.
+\end{theorem}
+
+The idea of the proof is first to reason about one part of the partition using the isoperimetric inequality from~\cite{FS02},
+and then to apply a certain averaging argument by proving concavity of a function related to $\Lambda$ using a delicate analytic argument.
+For the full proof, see Appendix~\ref{app_lower}.
+
+We note that the above requirement of all parts induced by $\mathcal{H}$ having measure at most $1/2$ is only a technicality.
+We conjecture that Theorem~\ref{rho_lower} holds without this restriction. In any case, as we will see below, in the interesting range of parameters
+this restriction is essentially irrelevant.
+
+One can observe that if every hash function in $\mathcal{H}$ partitions the sphere into at most $T$ parts, then $p_2^* \geq \frac{1}{T}$
+(indeed, $p_2^*$ is precisely the average sum of squares of measures of the parts). This observation, combined with
+Theorem~\ref{rho_lower}, leads to the following interesting consequence.
+Specifically, we can numerically estimate $\Lambda$ in order to give a lower bound on $\rho = \frac{\log(1 / p_1)}{\log(1 / p_2)}$ for any hash family $\mathcal{H}$ in which every function induces at most $T$ parts of measure at most $1/2$.
+See Figure~\ref{fig_lower}, where we plot this lower bound for
+$r_1 = \sqrt{2} / 2$,\footnote{The situation is qualitatively similar for other values of~$r_1$.} together with an upper bound that is given by the cross-polytope LSH\footnote{More specifically, for the ``partial'' version from Section~\ref{sec:partial_cp}, since $T$ should be constant, while $d$ grows} (for which we use numerical estimates for~(\ref{prob_exp})). We can make several conclusions from this plot. First, the cross-polytope LSH gives an almost optimal trade-off between $\rho$ and $T$. Given that the evaluation time for the
+cross-polytope LSH is $O(T \log T)$ (if one uses pseudo-random rotations), we conclude that in order to improve upon the cross-polytope LSH
+substantially in practice, one should design an LSH family with $\rho$ being close to optimal and evaluation time that
+is \emph{sublinear in $T$}. We note that none of the known LSH families for a sphere has been shown to have this property.
+This direction looks especially interesting since the convergence of $\rho$ to the optimal value (as $T$ tends to infinity) is extremely slow
+(for instance, according to Figure~\ref{fig_lower}, for $r_1 = \sqrt{2} / 2$ and $r_2 \approx \sqrt{2}$ we need more than $10^{5}$ parts to achieve
+$\rho \leq 0.2$, whereas the optimal $\rho$ is $1/7 \approx 0.143$).
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% MULTIPROBE LSH
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Multiprobe LSH for the cross-polytope LSH}
+\label{ref:multiprobe}
+We now describe our multiprobe scheme for the cross-polytope LSH, which is a method for reducing the number of independent hash tables in an LSH data structure.
+Given a query point $q$, a ``standard'' LSH data structure considers only a \emph{single} cell in each of the $L$ hash tables (the cell is given by the hash value $h_i(q)$ for $i \in [L]$).
+In multiprobe LSH, we consider candidates from \emph{multiple} cells in each table \cite{lv2007multi}.
+The rationale is the following: points $p$ that are close to $q$ but fail to collide with $q$ under hash function $h_i$ are still likely to hash to a value that is close to $h_i(q)$.
+By probing multiple hash locations close to $h_i(q)$ in the same table, multiprobe LSH achieves a given probability of success with a smaller number of hash tables than ``standard'' LSH.
+Multiprobe LSH has been shown to perform well in practice \cite{lv2007multi, slaney2012optimal}.
+
+The main ingredient in multiprobe LSH is a probing scheme for generating and ranking possible modifications of the hash value $h_i(q)$.
+The probing scheme should be computationally efficient and ensure that more likely hash locations are probed first.
+For a single cross-polytope hash, the order of alternative hash values is straightforward: let $x$ be the (pseudo-)randomly rotated version of query point $q$.
+Recall that the ``main'' hash value is $h_i(q) = \argmax_{j \in [d]} |x_j|$.\footnote{In order to simplify notation, we consider a slightly modified version of the cross-polytope LSH that maps both the standard basis vector $+e_j$ and its opposite $-e_j$ to the same hash value.
+It is easy to extend the multiprobe scheme defined here to the ``full'' cross-polytope LSH from Section \ref{sec:crossPoly}.}
+Then it is easy to see that the second highest probability of collision is achieved for the hash value corresponding to the coordinate with the second largest absolute value, etc.
+Therefore, we consider the indices $i \in [d]$ sorted by their absolute value as our probing sequence or ``ranking'' for a single cross-polytope.
+
+The remaining question is how to combine multiple cross-polytope rankings when we have more than one hash function.
+As in the analysis of the cross-polytope LSH (see Section \ref{sec:crossPoly}, we consider two points $q = e_1$ and $p = \alpha e_1 + \beta e_2$ at distance $R$.
+Let $A^{(i)}$ be the i.i.d.\ Gaussian matrix of hash function $h_i$, and let $x^{(i)} = A^{(i)} e_1$ be the randomly rotated version of point $q$.
+Given $x^{(i)}$, we are interested in the probability of $p$ hashing to a certain combination of the individual cross-polytope rankings.
+More formally, let $r^{(i)}_{v_i}$ be the index of the $v_i$-th largest element of $|x^{(i)}|$, where $v \in [d]^k$ specifies the alternative probing location.
+Then we would like to compute
+\begin{align*}
+  \underset{A^{(1)}, \ldots, A^{(k)}}{\mathrm{Pr}}&\big[ h_i(p) = r^{(i)}_{v_i} \textnormal{ for all } i \in [k] \; | \; A^{(i)} q = x^{(i)}\big] \\
+  &= \; \prod_{i=1}^k \underset{A^{(i)}}{\mathrm{Pr}} \Big[ \argmax_{j \in [d]} \big| (\alpha \cdot A^{(i)} e_1 + \beta \cdot A^{(i)} e_2)_j \big| = r^{(i)}_{v_i} \; \Big| \; A^{(i)} e_1 = x^{(i)}\Big] \; .
+\end{align*}
+If we knew this probability for all $v \in [d]^k$, we could sort the probing locations by their probability.
+We now show how to approximate this probability efficiently for a single value of $i$ (and hence drop the superscripts to simplify notation).
+WLOG, we permute the rows of $A$ so that $r_v = v$ and get
+\[
+  \underset{A}{\mathrm{Pr}} \Big[ \argmax_{j \in [d]} \big| (\alpha x + \beta \cdot A e_2)_j \big| = v \; \Big| \; A e_1 = x \Big] \;\; = \;\; \underset{y \sim N(0, I_d)}{\mathrm{Pr}} \Big[ \argmax_{j \in [d]} \big| (x + \frac{\beta}{\alpha} \cdot y)_j \big| = v \Big] \; .
+\]
+The RHS is the Gaussian measure of the set $S = \{y \in \R^d \, | \, \argmax_{j \in [d]} \big| (x + \frac{\beta}{\alpha} y)_j \big| = v\}$.
+Similar to the analysis of the cross-polytope LSH, we approximate the measure of $S$ by its distance to the origin.
+Then the probability of probing location $v$ is proportional to $\exp(-\|y_{x,v}\|^2)$, where $y_{x,v}$ is the shortest vector $y$ such that $\argmax_{j} | x + y|_j = v$.
+Note that the factor $\beta / \alpha$ becomes a proportionality constant, and hence the probing scheme does not require to know the distance $R$.
+For computational performance and simplicity, we make a further approximation and use $y_{x,v} = (\max_i |x_i| - |x_v|) \cdot e_v$, i.e., we only consider modifying a single coordinate to reach the set $S$.
+
+Once we have estimated the probabilities for each $v_i \in [d]$, we incrementally construct the probing sequence using a binary heap, similar to the approach in \cite{lv2007multi}.
+For a probing sequence of length $m$, the resulting algorithm has running time $O(L \cdot d \log d + m \log m)$.
+In our experiments, we found that the $O(L \cdot d \log d)$ time taken to sort the probing candidates $v_i$ dominated the running time of the hash function evaluation.
+In order to circumvent this issue, we use an incremental sorting approach that only sorts the relevant parts of each cross-polytope and gives a running time of $O(L \cdot d + m \log m)$.
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% EXPERIMENTS
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Experiments}
+\label{sec:experiments}
+We now show that the cross-polytope LSH, combined with our multiprobe extension, leads to an algorithm that is also efficient in practice and improves over the hyperplane LSH on several data sets.
+The focus of our experiments is the query time for an \emph{exact} nearest neighbor search.
+Since hyperplane LSH has been compared to other nearest-neighbor algorithms before \cite{SSL14}, we limit our attention to the relative speed-up compared with hyperplane hashing.
+
+
+We evaluate the two hashing schemes on three types of data sets.
+We use a synthetic data set of randomly generated points because this allows us to vary a single problem parameter while keeping the remaining parameters constant.
+We also investigate the performance of our algorithm on real data: two tf-idf data sets \cite{Lichman2013} and a set of SIFT feature vectors \cite{JDS11}.
+We have chosen these data sets in order to illustrate when the cross-polytope LSH gives large improvements over the hyperplane LSH, and when the improvements are more modest.
+See Appendix \ref{app:experiments} for a more detailed description of the data sets and our experimental setup (implementation details, CPU, etc.).
+
+In all experiments, we set the algorithm parameters so that the empirical probability of successfully finding the exact nearest neighbor is at least 0.9.
+Moreover, we set the number of LSH tables $L$ so that the amount of additional memory occupied by the LSH data structure is comparable to the amount of memory necessary for storing the data set.
+We believe that this is the most interesting regime because significant memory overheads are often impossible for large data sets.
+In order to determine the parameters that are not fixed by the above constraints,
+we perform a grid search over the remaining parameter space and report the best combination of parameters.
+For the cross-polytope hash, we consider ``partial'' cross-polytopes in the last of the $k$ hash functions in order to get a smooth trade-off between the various parameters (see Section \ref{sec:partial_cp}).
+
+\paragraph{Multiprobe experiments.}
+In order to demonstrate that the multiprobe scheme is critical for making the cross-polytope LSH competitive with hyperplane hashing, we compare the performance of a ``standard'' cross-polytope LSH data structure with our multiprobe variant on an instance of the random data set ($n=2^{20}$, $d=128$).
+As can be seen in Table \ref{table:multiprobe} (Appendix \ref{app:experiments}), the multiprobe variant is about $13\times$ faster in our memory-constrained setting ($L = 10$).
+Note that in all of the following experiments, the speed-up of the multiprobe cross-polytope LSH compared to the multiprobe hyperplane LSH is less than $11 \times$.
+Hence without our multiprobe addition, the cross-polytope LSH would be slower than the hyperplane LSH, for which a multiprobe scheme is already known \cite{lv2007multi}.
+
+\paragraph{Experiments on random data.}
+Next, we show that the better time complexity of the cross-polytope LSH already applies for moderate values of $n$.
+In particular, we compare the cross-polytope LSH, combined with fast rotations (Section \ref{sec:cppractical}) and our multiprobe scheme, to a multi-probe hyperplane LSH on random data.
+We keep the dimension $d = 128$ and the distance to the nearest neighbor $R = \sqrt{2}/2$ fixed, and vary the size of the data set from $2^{20}$ to $2^{28}$.
+The number of hash tables $L$ is set to $10$.
+For $2^{20}$ points, the cross-polytope LSH is already $3.5 \times$ faster than the hyperplane LSH, and for $n= 2^{28}$ the speedup is $10.3\times$ (see Table \ref{table:randomdata} in Appendix \ref{app:experiments}).
+Compared to a linear scan, the speed-up achieved by the cross-polytope LSH ranges from $76\times$ for $n=2^{20}$ to about $700\times$ for $n=2^{28}$.
+
+
+\paragraph{Experiments on real data.} On the SIFT data set ($n = 10^6$ and $d = 128$), the cross-polytope LSH achieves a modest speed-up of $1.2\times$ compared to the hyperplane LSH (see Table \ref{table:realdata}).
+On the other hand, the speed-up is is $3 - 4\times$ on the two tf-idf data sets, which is a significant improvement considering the relatively small size of the NYT data set ($n \approx 300,000$).
+One important difference between the data sets is that the typical distance to the nearest neighbor is smaller in the SIFT data set, which can make the nearest neighbor problem easier (see Appendix \ref{app:experiments}).
+Since the tf-idf data sets are very high-dimensional but sparse ($d \approx 100,000$), we use the feature hashing approach described in Section \ref{sec:cppractical} in order to reduce the hashing time of the cross-polytope LSH (the standard hyperplane LSH already runs in time proportional to the sparsity of a vector).
+We use $512$ and $2048$ as feature hashing dimensions for NYT and pubmed, respectively.
+
+\begin{table}
+\centering
+\begin{tabular}{ccccccccc}
+\toprule
+Data set & Method & \specialcell{Query\\time (ms)} & \specialcell{\textbf{Speed-up}\\\textbf{vs HP}} & Best $k$ & \specialcell{Number of\\candidates} & \specialcell{Hashing\\time (ms)} & \specialcell{Distances\\time (ms)} \\
+\midrule
+NYT & HP & 120 ms & & 19 & 57,200 & 16 & 96 \\
+NYT & CP & 35 ms & \mbox{\boldmath$3.4\times$} & 2 (64) & 17,900 & 3.0 & 30 \\
+\midrule
+pubmed & HP & 857 ms & & 20 & 1,480,000 & 36 & 762 \\
+pubmed & CP & 213 ms & \mbox{\boldmath$4.0\times$} & 2 (512) & 304,000 & 18 & 168 \\
+\midrule
+SIFT & HP & 3.7 ms & & 30 & 18,628 & 0.2 & 3.0 \\
+SIFT & CP & 3.1 ms & \mbox{\boldmath$1.2\times$} & 6 (1) & 13,000 & 0.6 & 2.2 \\
+\bottomrule
+\end{tabular}
+\caption{Average running times for a single nearest neighbor query with the hyperplane (HP) and cross-polytope (CP) algorithms on three real data sets.
+The cross-polytope LSH is faster than the hyperplane LSH on all data sets, with significant speed-ups for the two tf-idf data sets NYT and pubmed.
+For the cross-polytope LSH, the entries for $k$ include both the number of individual hash functions per table and (in parenthesis) the dimension of the last of the $k$ cross-polytopes.}
+\label{table:realdata}
+\end{table}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% APPENDICES
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\appendix
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% APPENDIX: GAUSSIAN MEASURE
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Gaussian measure of a planar set}
+\label{app_gaussian}
+
+In this Section we formalize the intuition that the standard Gaussian measure of a closed subset $A \subseteq \Rbb^2$
+behaves like $e^{-\Delta_A^2 / 2}$, where $\Delta_A$ is the distance from the origin to $A$, unless $A$ is quite special.
+
+For a closed subset $A \subseteq \Rbb^2$ and $r > 0$ denote $0 \leq \mu_A(r) \leq 1$ the normalized measure of the intersection
+$A \cap r S^1$ ($A$ with the circle centered in the origin and of radius $r$):
+$$
+\mu_A(r) := \frac{\mu(A \cap r S^1)}{2 \pi r};
+$$
+here $\mu$ is the standard one-dimensional Lebesgue measure. Denote $\Delta_A := \inf \{r > 0 : \mu_A(r) > 0\}$
+the (essential) distance from the origin to $A$. Let $\mathcal{G}(A)$ be the standard Gaussian measure of $A$.
+
+\begin{lemma}
+  \label{measure_typical}
+  Suppose that $A \subseteq \Rbb^2$ is a closed set such that $\mu_A(r)$ is non-decreasing. Then,
+  $$
+  \sup_{r > 0} \Bigl(\mu_A(r) \cdot e^{-r^2 / 2}\Bigr) \leq \mathcal{G}(A) \leq e^{-\Delta_A^2 / 2}.
+  $$
+\end{lemma}
+\begin{proof}
+  For the upper bound, we note that
+  $$
+  \mathcal{G}(A) = \int_{0}^{\infty} \mu_A(r) \cdot re^{-r^2/2} \, dr
+  \leq \int_{\Delta_A}^{\infty} re^{-r^2 / 2} \, dr = e^{-\Delta_A^2 / 2}.
+  $$
+  For the lower bound, we similarly have, for every $r^* > 0$,
+  $$
+  \mathcal{G}(A) = \int_{0}^{\infty} \mu_A(r) \cdot r e^{-r^2 / 2} \, dr \geq
+  \mu_A(r^*) \cdot \int_{r^*}^{\infty} re^{-r^2 / 2} \, dr = \mu_A(r^*) e^{-(r^*)^2 / 2},
+  $$
+  where we use that $\mu_A(r^*)$ is non-decreasing.
+\end{proof}
+
+Now we derive two corollaries of Lemma~\ref{measure_typical}.
+
+\begin{lemma}
+  \label{measure_convex}
+  Let $K \subseteq \Rbb^2$ be the complement of an open convex subset of the plane that is symmetric around the origin.
+  Then, for every $0 < \eps < 1/3$,
+  $$
+  \Omega\Bigl(\eps^{1/2} \cdot e^{-(1 + \eps) \cdot \Delta_K^2 / 2}\Bigr) \leq \mathcal{G}(K) \leq e^{-\Delta_K^2 / 2}.
+  $$
+\end{lemma}
+\begin{proof}
+  This follows from Lemma~\ref{measure_typical}: indeed, due to the convexity of the complement of $K$, $\mu_K(r)$ is non-decreasing.
+  It is easy to check that
+  $$
+  \mu_K\Bigl((1 + \eps) \Delta_K\Bigr) = \Omega\Bigl(\eps^{1/2}\Bigr),
+  $$
+  again, due to the convexity.
+  Thus, the required bounds follow.
+\end{proof}
+
+\begin{lemma}
+  \label{measure_wedge}
+  Let $K \subseteq \Rbb^2$ be an intersection of two closed half-planes such that:
+  \begin{itemize}
+  \item $K$ does not contain a line;
+  \item the ``corner'' of $K$ is the closest point of $K$ to the origin;
+  \item the angle between half-planes equals to $0 < \alpha < \pi$.
+  \end{itemize}
+  Then, for every $0 < \eps < 1/2$,
+  $$
+  \Omega_{\alpha}\Bigl(\eps \cdot e^{-(1 + \eps) \cdot \Delta_K^2}\Bigr)\leq \mathcal{G}(K) \leq e^{-\Delta_K^2 / 2}.
+  $$
+\end{lemma}
+
+\begin{proof}
+  This, again, follows from Lemma~\ref{measure_typical}. The second condition implies that $\mu_K(r)$ is non-decreasing,
+  and an easy computation shows that
+  $$
+  \mu_K((1 + \eps) \Delta_K) \geq \Omega_{\alpha}(\eps).
+  $$
+\end{proof}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% APPENDIX: PROOF OF UPPER BOUND
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Proof of Theorem~\ref{rho_upper}}
+\label{app_upper}
+
+In this section we complete the proof of Theorem~\ref{rho_upper},
+following the outline from Section~\ref{sec:crossPoly}. Our starting
+point is the collision probability bound from Eqn.~\eqref{prob_exp}.
+
+For $u, v \in \Rbb$ with $u \geq 0$ and $\alpha u + \beta v \geq 0$ define,
+$$
+\sigma(u, v) = \underset{X_2, Y_2 \sim N(0, 1)}{\mathrm{Pr}}[|X_2| \leq u \mbox{ and } |\alpha X_2 + \beta Y_2| \leq \alpha u + \beta v].
+$$
+Then, the right-hand side of~(\ref{prob_exp}) is equal to
+$$
+2d \cdot \underset{X_1, Y_1 \sim N(0, 1)}{\mathrm{E}}[\sigma(X_1, Y_1)^{d-1}].
+$$
+Let us define
+$$
+\Delta(u, v) = \min\{u, \alpha u + \beta v\}.
+$$
+
+\begin{lemma}
+  \label{est1}
+  For every $0 < \eps < 1/3$,
+  $$
+  1 - e^{-\Delta(u, v)^2 / 2} \leq \sigma(u, v) \leq 1 - \Omega\left(\eps^{1/2} \cdot e^{-(1 +\eps)\Delta(u, v)^2 / 2 }\right).
+  $$
+\end{lemma}
+\begin{proof}
+  This is a combination of Lemma~\ref{measure_convex} together with the following obvious observation: the distance from the origin to the
+  set $\{(x, y) : |x| \geq u \mbox{ or } |\alpha x + \beta y| \geq \alpha u + \beta v\}$ is equal to $\Delta(u, v)$.
+\end{proof}
+
+\begin{lemma}
+  \label{est2}
+  For every $t \geq 0$ and $0 < \eps < 1/3$,
+  $$
+  \Omega_{\tau}\left(\eps \cdot e^{-(1 + \eps) \cdot \frac{4}{4 - \tau^2} \cdot \frac{t^2}{2}}\right) \leq \underset{X_1, Y_1 \sim N(0, 1)}{\mathrm{Pr}}[\Delta(X_1, Y_1) \geq t] \leq e^{-\frac{4}{4 - \tau^2} \cdot \frac{t^2}{2}}.
+  $$
+\end{lemma}
+\begin{proof}
+  Similar to the previous lemma, this is a consequence of Lemma~\ref{measure_wedge} together with the fact that the squared distance from the origin to the set
+  $\{(x, y) \colon x \geq t \mbox{ and } \alpha x + \beta y \geq t\}$ is equal to $\frac{4}{4 - \tau^2} \cdot t^2$.
+\end{proof}
+
+\subsection{Idealized proof}
+
+Let us expand Eqn.~\eqref{prob_exp} further, assuming that the
+``idealized'' versions of Lemma~\ref{est1} and Lemma~\ref{est2}
+hold. Namely, we assume that
+\begin{equation}
+\label{ideal_est1}
+\sigma(u, v) = 1 - e^{-\Delta(u, v)^2 / 2};
+\end{equation}
+and
+\begin{equation}
+\label{ideal_est2}
+\underset{X_1, Y_1 \sim N(0, 1)}{\mathrm{Pr}}[\Delta(X_1, Y_1) \geq t] = e^{-\frac{4}{4 - \tau^2} \cdot \frac{t^2}{2}}.
+\end{equation}
+
+In the next section we redo the computations using the precise bounds for
+$\sigma(u, v)$ and ${\mathrm{Pr}}[\Delta(X_1, Y_1) \geq t]$.
+
+Expanding Eqn.~\eqref{prob_exp}, we have
+\begin{align}
+  \underset{X_1, Y_1 \sim N(0, 1)}{\mathrm{E}}[\sigma(X_1, Y_1)^{d-1}] \nonumber & =
+  \int_0^1 \underset{X_1, Y_1 \sim N(0, 1)}{\mathrm{Pr}}[\sigma(X_1, Y_1) \geq t^{\frac{1}{d-1}}] \, dt \\
+  \nonumber & =
+  \int_0^1 \underset{X_1, Y_1 \sim N(0, 1)}{\mathrm{Pr}}[e^{-\Delta(X_1, Y_1)^2 / 2} \leq 1 - t^{\frac{1}{d-1}}] \, dt \\
+  \nonumber & =
+  \int_0^1 (1 - t^{\frac{1}{d - 1}})^{\frac{4}{4 - \tau^2}} \, dt \\
+  \nonumber & =
+  (d - 1) \cdot \int_0^1 (1 - u)^{\frac{4}{4 - \tau^2}} u^{d-2} \, dt \\
+  \nonumber & = (d - 1) \cdot B \left(\frac{8 - \tau^2}{4 - \tau^2}; d - 1\right) \\
+  & = \Theta_{\tau}(1) \cdot d^{- \frac{4}{4 - \tau^2}}, \label{ideal_derivation}
+\end{align}
+where:
+\begin{itemize}
+\item the first step is a standard expansion of an expectation;
+\item the second step is due to~(\ref{ideal_est1});
+\item the third step is due to~(\ref{ideal_est2});
+\item the fourth step is a change of variables;
+\item the fifth step is a definition of the Beta function;
+\item the sixth step is due to the Stirling approximation.
+\end{itemize}
+Overall, substituting~(\ref{ideal_derivation}) into~(\ref{prob_exp}), we get:
+$$
+\ln \frac{1}{\underset{h \sim \mathcal{H}}{\mathrm{Pr}}[h(p) = h(q)]} = \frac{\tau^2}{4 - \tau^2} \cdot \ln d \pm O_{\tau}(1).
+$$
+
+\subsection{The real proof}
+
+We now perform the exact calculations, using the bounds (involving
+$\eps$) from Lemma~\ref{est1} and Lemma~\ref{est2}. We set $\eps = 1 /
+d$ and obtain the following asymptotic statements:
+$$
+\sigma(u, v) = 1 - d^{\pm O(1)} \cdot e^{-(1 \pm d^{-\Omega(1)}) \cdot \Delta(u, v)^2 / 2};
+$$
+and
+$$
+\underset{X, Y \sim N(0, 1)}{\mathrm{Pr}}[\Delta(X, Y) \geq t] = d^{\pm O(1)} \cdot e^{-(1 \pm d^{-\Omega(1)}) \cdot \frac{4}{4 - \tau^2} \cdot \frac{t^2}{2}}.
+$$
+Then, we can repeat the ``idealized'' proof (see Eqn.~\eqref{ideal_derivation}) verbatim with the new estimates and obtain the final form of Theorem~\ref{rho_upper}:
+$$
+\ln \frac{1}{\underset{h \sim \mathcal{H}}{\mathrm{Pr}}[h(p) = h(q)]} = \frac{\tau^2}{4 - \tau^2} \cdot \ln d \pm O_{\tau}(\ln \ln d).
+$$
+Note the difference in the low order term between idealized and the real version. As we argue in Section~\ref{sec_lower}, the latter
+$O_{\tau}(\ln \ln d)$ is, in fact, tight.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% APPENDIX: PROOF OF LOWER BOUND
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Proof of Theorem~\ref{rho_lower}}
+\label{app_lower}
+
+\begin{lemma}
+  \label{iso_lemma}
+  Let $A \subset S^{d-1}$ be a measurable subset of a sphere with $\mu(A) = \mu_0 \leq 1/2$.
+  Then, for $0 < \tau < \sqrt{2}$, one has
+  \begin{equation}
+    \label{iso_statement}
+  \underset{u, v \sim S^{d-1}}{\mathrm{Pr}}\bigl[v \in A \bigm| u \in A, \|u - v\| \leq \tau\bigr] =
+  \frac{\underset{X, Y \sim N(0, 1)}{\mathrm{Pr}}[X \geq \eta \mbox{ and } \alpha X + \beta Y \geq \eta] + o(1)}{\underset{X \sim N(0, 1)}{\mathrm{Pr}}[X \geq \eta] + o(1)},
+  \end{equation}
+  where:
+  \begin{itemize}
+  \item $\alpha = 1 - \frac{\tau^2}{2}$;
+  \item $\beta = \sqrt{\tau^2 - \frac{\tau^4}{4}}$;
+  \item $\eta \in \Rbb$ is such that $\underset{X \sim N(0, 1)}{\mathrm{Pr}}[X \geq \eta] = \mu_0$.
+  \end{itemize}
+  In particular, if $\mu_0 = \Omega(1)$, then
+  $$
+  \underset{u, v \sim S^{d-1}}{\mathrm{Pr}}\bigl[v \in A \bigm| u \in A, \|u - v\| \leq \tau\bigr]
+  = \Lambda(\tau, \Phi_c^{-1}(\mu_0)) + o(1).
+  $$
+\end{lemma}
+\begin{proof}
+  First, the left-hand side of~(\ref{iso_statement})
+  is maximized by a spherical cap of measure $\mu_0$. This follows from Theorem~5 of~\cite{FS02}.
+  So, from now on we assume that $A$ is a spherical cap.
+
+  Second, one has
+  \begin{align*}
+  & \underset{u, v \sim S^{d-1}}{\mathrm{Pr}}\bigl[v \in A \bigm| u \in A, \|u - v\| \leq \tau\bigr] \\
+  & = \underset{u, v \sim S^{d-1}}{\mathrm{Pr}}\bigl[v \in A \bigm| u \in A, \|u - v\| = \tau \pm o(1)\bigr] + o(1) \\
+    & = \frac{\underset{u \sim S^{d-1}}{\mathrm{Pr}}\bigl[u_1 \geq \widetilde{\eta} \mbox{ and }
+        (\alpha \pm o(1)) u_1 + (\beta \pm o(1)) u_2 \geq \widetilde{\eta}
+        \bigr]}{\underset{u \sim S^{d-1}}{\mathrm{Pr}}[u_1 \geq \widetilde{\eta}]} + o(1)\\
+  & = \frac{\underset{X, Y \sim N(0, 1)}{\mathrm{Pr}}[X \geq \eta \mbox{ and } \alpha X + \beta Y \geq \eta] + o(1)}{\underset{X \sim N(0, 1)}{\mathrm{Pr}}[X \geq \eta] + o(1)},
+  \end{align*}
+  where $\widetilde{\eta}$ is such that $\underset{u \sim S^{d-1}}{\mathrm{Pr}}[u_1 \geq \widetilde{\eta}] = \mu_0$
+  and:
+  \begin{itemize}
+  \item the first step is due to the concentration of measure on the sphere;
+  \item the second step is expansion of the conditional probability;
+  \item the third step is due to the fact that a $O(1)$-dimensional
+    projection of the uniform measure on a sphere of radius $\sqrt{d}$ in $\Rbb^d$
+    converges in total variation to a standard Gaussian measure~\cite{DF87}.
+  \end{itemize}
+\end{proof}
+
+\begin{lemma}
+  \label{conc_lemma}
+  For every $0 < \tau < \sqrt{2}$, the function $\mu \mapsto \Lambda(\tau, \Phi_c^{-1}(\mu))$ is concave for $0 < \mu < 1/2$.
+\end{lemma}
+\begin{proof}
+  Abusing notation, for this proof we denote $\Lambda(\eta) = \Lambda(\tau, \eta)$ and
+  $$I(\eta) = \underset{X, Y \sim N(0, 1)}{\mathrm{Pr}}[X \geq \eta \mbox{ and } \alpha X + \beta Y \geq \eta]$$
+  (that is, $\Lambda(\eta) = I(\eta) / \Phi_c(\eta)$).
+       One has $\Phi_c'(\eta) = - \frac{e^{-\eta^2 / 2}}{\sqrt{2 \pi}}$ and
+       $$
+       I'(\eta) = - \sqrt{\frac{2}{\pi}} \cdot e^{-\eta^2 / 2} \cdot \Phi_c\left(\frac{(1 - \alpha)\eta}{\beta}\right).
+       $$
+       Combining, we get
+       $$
+       \Lambda'(\eta) = \frac{e^{-\eta^2 / 2}}{\sqrt{2 \pi}} \cdot \frac{I(\eta) - 2 \Phi_c(\eta) \Phi_c\left(\frac{(1 - \alpha) \eta}{\beta}\right)}{\Phi_c(\eta)^2}
+       $$
+       and
+       $$
+       \frac{d \Lambda(\Phi_c^{-1}(\mu))}{d \mu} = \frac{2 \Phi_c(\eta^*) \Phi_c\left(\frac{(1 - \alpha) \eta^*}{\beta}\right) - I(\eta^*)}{\Phi_c(\eta^*)^2} =: \Pi(\eta^*),
+       $$
+       where $\eta^* = \eta^*(\mu) = \Phi_c^{-1}(\mu)$. It is sufficient to show that $\Pi(\eta^*)$ is non-decreasing
+       in $\eta^*$ for $\eta^* \geq 0$.
+
+       We have
+       \begin{multline*}
+       \Pi'(\eta) = \sqrt{\frac{2}{\pi}} \cdot \frac{e^{-\eta^2 / 2}}{\Phi_c(\eta)^3} \left(2 \cdot \Phi_c(\eta)
+       \Phi_c\left(\frac{(1 - \alpha)\eta}{\beta}\right) - I(\eta)
+       - \frac{1 - \alpha}{\beta} \cdot e^{\frac{\alpha(1 - \alpha)}{\beta^2} \cdot \eta^2} \Phi_c(\eta)^2\right)
+       \\=:\sqrt{\frac{2}{\pi}} \cdot \frac{e^{-\eta^2 / 2}}{\Phi_c(\eta)^3} \cdot \Omega(\eta).
+       \end{multline*}
+
+       We need to show that $\Omega(\eta) \geq 0$ for $\eta \geq 0$. We will do this by showing that
+       $\Omega'(\eta) \leq 0$ for $\eta \geq 0$ and that $\lim_{\eta \to \infty} \Omega(\eta) = 0$.
+       The latter is obvious, so let us show the former.
+       $$
+       \Omega'(\eta) = - \frac{2 \alpha(1 - \alpha)^2}{\beta^3} \cdot e^{\frac{\alpha(1 - \alpha)}{\beta^2} \eta^2} \cdot \Phi_c(\eta)^2 \cdot \eta \leq 0
+       $$
+       for $\eta \geq 0$.
+\end{proof}
+
+Now we are ready to prove Theorem~\ref{rho_lower}. Let us first assume that all the parts have measure $\Omega(1)$. Later we will show
+that this assumption can be removed. W.l.o.g. we assume that functions from the family have subsets integers as a range. We have,
+\begin{align*}
+  p_1 & \leq \underset{\substack{u, v \sim S^{d-1}\\h \sim \mathcal{H}}}{\mathrm{Pr}}\bigr[h(u) = h(v) \bigm| \|u - v\| \leq \tau \bigr] \\
+  & = \underset{h \sim \mathcal{H}}{\mathrm{E}}\left[\sum_i \mu(h^{-1}(i)) \underset{}{\mathrm{Pr}}[v \in h^{-1}(i) \mid u \in h^{-1}(i), \|u - v\| \leq \tau]\right] \\
+  & \leq \underset{h \sim \mathcal{H}}{\mathrm{E}}\left[\sum_i \mu(h^{-1}(i)) \Lambda(\tau, \Phi_c^{-1}(\mu(h^{-1}(i))))\right] + o(1) \\
+  & \leq \Lambda\left(\tau, \Phi_c^{-1}\left(\underset{h \sim \mathcal{H}}{\mathrm{E}}\left[\sum_i \mu(h^{-1}(i))^2\right]\right)\right) + o(1) \\
+  & \leq \Lambda(\tau, \Phi_c^{-1}(p^*(\mathcal{H}))) + o(1),
+\end{align*}
+where:
+\begin{itemize}
+\item the first step is by the definition of $p_1$;
+\item the third step is due to the condition $\mu(h^{-1}(i)) = \Omega(1)$ and Lemma~\ref{iso_lemma};
+\item the fourth step is due to Lemma~\ref{conc_lemma} and the assumption $\mu(h^{-1}(i)) \leq 1/2$;
+\item the final step is due to the definition of $p^*(\mathcal{H})$.
+\end{itemize}
+
+To get rid of the assumption that a measure of every part is $\Omega(1)$ observe that all parts with measure at most $\eps$ contribute to
+the expectation at most $\eps \cdot T$, since there are at most $T$ pieces in total. Note that if $\eps = o(1)$, then $\eps \cdot T = o(1)$,
+since we assume $T$ being fixed.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% APPENDIX: EXPERIMENTS
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Further description of experiments}
+\label{app:experiments}
+In order to compare meaningful running time numbers, we have written fast C++ implementations of both the cross-polytope LSH and the hyperplane LSH.
+This enables a fair comparison since both implementations have been optimized by us to the same degree.
+In particular, hyperplane hashing can be implemented efficiently using a matrix-vector multiplication sub-routine for which we use the eigen library (eigen is also used for all other linear algebra operations).
+For the fast pseudo-random rotation in the cross-polytope LSH, we have written a SIMD-optimized version of the Fast Hadamard Transform (FHT).
+We compiled our code with g++ 4.9 and the -O3 flag.
+All experiments except those in Table \ref{table:randomdata} ran on an Intel Core i5-2500 CPU (3.3 - 3.7 GHz, 6 MB cache) with 8 GB of RAM.
+Since 8 GB of RAM was too small for the larger values of $n$, we ran the experiments in Table \ref{table:randomdata} on a machine with an Intel Xeon E5-2690 v2 CPU (3.0 GHz, 25 MB cache) and 512 GB of RAM.
+
+In our experiments, we evaluate the performance of the cross-polytope LSH on the following data sets.
+\begin{description}[leftmargin=.5cm]
+\item[random] For the random data sets, we generate a set of $n$ points uniformly at random on the unit sphere.
+In order to generate a query, we pick a random point $q'$ from the data set and generate a point at distance $R$ from $q'$ on the unit sphere.
+In our experiments, we vary the dimension of the point set between 128 and 1,024.
+Experiments with the random data set are useful because we can study the impact of various parameters (e.g., the dimension $d$ or the number of points $n$) while keeping the remaining parameters constant.
+\item[pubmed / NYT] The pubmed and NYT data sets contain bag-of-words representations of medical paper abstracts and newspaper articles, respectively \cite{Lichman2013}.
+We convert this representation into standard tf-idf feature vectors with dimensionality about 100,000.
+The number of points in the pubmed data set is about 8 million, for NYT it is 300,000.
+Before setting up the LSH data structures, we set 1000 data points aside as query vectors.
+When selecting query vectors, we limit our attention to points for which the inner product with the nearest neighbor is between 0.3 and 0.8.
+We believe that this is the most interesting range since near-duplicates (inner product close to 1) can be identified more efficiently with other methods, and points without a close nearest neighbor (inner product less than 0.3) often do not have a semantically meaningful match.
+\item[SIFT] We use the standard data set of one million SIFT feature vectors from \cite{JDS11}, which also contains a set of 10,000 query vectors.
+The SIFT feature vectors have dimension $128$ and (approximately) live on a sphere.
+We normalize the feature vectors to unit length but keep the original nearest neighbor assignments---this is possible because only a very small fraction of nearest neighbors changes through normalization.
+We include this data set as an example where the speed-up of the cross-polytope LSH is more modest.
+\end{description}
+
+\begin{table}[htb]
+\centering
+\begin{tabular}{cccccccc}
+\toprule
+Method & $k$ & \specialcell{Last CP\\dimension} & \specialcell{Extra\\probes} & \specialcell{\textbf{Query}\\\textbf{time (ms)}} & \specialcell{Number of\\candidates} & \specialcell{CP hashing \\time (ms)} & \specialcell{Distances\\time (ms)} \\
+\midrule
+Single-probe & 1 & 128 & 0 & \textbf{6.7} & 39800 & 0.01 & 6.3 \\
+Multiprobe & 3 & 16 & 896 & \textbf{0.51} & 867 & 0.22 & 0.16 \\
+\bottomrule
+\end{tabular}
+\caption{Comparison of ``standard'' LSH using the cross-polytope (CP) hash vs.\ our multiprobe variant ($L = 10$ in both cases).
+On a random data set with $n = 2^{20}$, $d = 128$, and $R = \sqrt{2} / 2$, the single-probe scheme requires $13\times$ more time per query.
+Due to the larger value of $k$, the multiprobe variant performs fewer distance computations, which leads to a better trade-off between the hash computation time and the time spent on computing distances to candidates from the hash tables.}
+\label{table:multiprobe}
+\end{table}
+
+\begin{table}[htb]
+\centering
+\begin{tabular}{cccccc}
+\toprule
+Data set size $n$ & $2^{20}$ & $2^{22}$ & $2^{24}$ & $2^{26}$ & $2^{28}$ \\
+\midrule
+HP query time (ms) & 2.6 & 7.4 & 25 & 63 & 185 \\
+CP query time (ms) & 0.75 & 1.4 & 3.1 & 8.8 & 18 \\
+\textbf{Speed-up} & \mbox{\boldmath$3.5\times$} & \mbox{\boldmath$5.3\times$} & \mbox{\boldmath$8.1\times$} & \mbox{\boldmath$7.2\times$} & \mbox{\boldmath$10.3\times$} \\
+$k$ for CP & 3 (16) & 3 (64) & 3 (128) & 4 (2) & 4 (64) \\
+\bottomrule
+\end{tabular}
+\caption{Average running times for a single nearest neighbor query with the hyperplane (HP) and cross-polytope (CP) algorithms on a random data set with $d = 128$ and $R = \sqrt{2}/2$.
+The cross-polytope LSH is up to $10\times$ faster than the hyperplane LSH.
+The last row of the table indicates the optimal choice of $k$ for the cross-polytope LSH and (in parenthesis) the dimension of the last of the $k$ cross-polytopes; all other cross-polytopes have full dimension 128.
+Note that the speed-up ratio is not monotonically increasing because the cross-polytope LSH performs better for values of $n$ where the optimal setting of $k$ uses a last cross-polytope with high dimension.
+}
+\label{table:randomdata}
+\end{table}
+
+\singlespace
+
+{\small
+\bibliographystyle{unsrt}
+\bibliography{refs}
+}
+
+\end{document}
