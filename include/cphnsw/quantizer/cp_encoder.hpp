@@ -149,11 +149,19 @@ public:
     /**
      * Encode vector to Cross-Polytope code.
      *
+     * THREAD SAFETY: Uses thread_local buffer for safe concurrent use.
+     * For explicit control over buffer allocation, use encode_with_buffer().
+     *
      * @param vec   Input vector (length >= dim_)
      * @return      Encoded CPCode
      */
     CPCode<ComponentT, K> encode(const Float* vec) const {
-        return encode_with_buffer(vec, buffer_.data());
+        // Thread-local buffer ensures thread safety without explicit synchronization
+        thread_local std::vector<Float> tls_buffer;
+        if (tls_buffer.size() < rotation_chain_.padded_dim()) {
+            tls_buffer.resize(rotation_chain_.padded_dim());
+        }
+        return encode_with_buffer(vec, tls_buffer.data());
     }
 
     /**
@@ -205,44 +213,20 @@ public:
      *
      * RABITQ-STYLE: Also stores quantized magnitudes in primary_code.
      *
+     * THREAD SAFETY: Uses thread_local buffer for safe concurrent use.
+     * For explicit control over buffer allocation, use encode_query_with_buffer().
+     *
      * @param vec   Input vector (length >= dim_)
      * @return      CPQuery with code and rotated vectors
      */
     CPQuery<ComponentT, K> encode_query(const Float* vec) const {
-        CPQuery<ComponentT, K> query;
+        // Thread-local buffer ensures thread safety without explicit synchronization
+        thread_local std::vector<Float> tls_buffer;
         size_t pdim = rotation_chain_.padded_dim();
-
-        // Same magnitude scale as encode_with_buffer
-        constexpr float MAG_SCALE = 0.5f;
-
-        for (size_t r = 0; r < K; ++r) {
-            // Apply rotation
-            rotation_chain_.apply_copy(vec, buffer_.data(), r);
-
-            // Store the FULL rotated vector for dot product reconstruction
-            query.rotated_vecs[r].resize(pdim);
-            std::copy(buffer_.begin(), buffer_.begin() + pdim, query.rotated_vecs[r].begin());
-
-            // Find argmax |buffer[i]| using SIMD-accelerated function
-            size_t max_idx;
-            Float max_abs;
-            find_argmax_abs(buffer_.data(), pdim, max_idx, max_abs);
-
-            // Store primary code component
-            bool is_negative = (buffer_[max_idx] < 0);
-            query.primary_code.components[r] =
-                CPCode<ComponentT, K>::encode(max_idx, is_negative);
-
-            // Store quantized magnitude in code (RaBitQ-style)
-            query.primary_code.magnitudes[r] =
-                CPCode<ComponentT, K>::quantize_magnitude(max_abs, MAG_SCALE);
-
-            // Store float magnitude for multiprobe ranking
-            query.magnitudes[r] = max_abs;
-            query.original_indices[r] = static_cast<uint32_t>(max_idx);
+        if (tls_buffer.size() < pdim) {
+            tls_buffer.resize(pdim);
         }
-
-        return query;
+        return encode_query_with_buffer(vec, tls_buffer.data());
     }
 
     /**
@@ -318,20 +302,32 @@ public:
         std::array<std::vector<std::tuple<size_t, Float, bool>>, K> sorted_indices;
     };
 
+    /**
+     * Encode with full sorted indices for advanced multiprobe.
+     *
+     * THREAD SAFETY: Uses thread_local buffer for safe concurrent use.
+     */
     EncodedWithSortedIndices encode_with_sorted_indices(const Float* vec) const {
+        // Thread-local buffer ensures thread safety
+        thread_local std::vector<Float> tls_buffer;
+        size_t pdim = rotation_chain_.padded_dim();
+        if (tls_buffer.size() < pdim) {
+            tls_buffer.resize(pdim);
+        }
+
         EncodedWithSortedIndices result;
 
         for (size_t r = 0; r < K; ++r) {
             // Apply rotation
-            rotation_chain_.apply_copy(vec, buffer_.data(), r);
+            rotation_chain_.apply_copy(vec, tls_buffer.data(), r);
 
             // Collect all (index, |value|, is_negative) tuples
             auto& sorted = result.sorted_indices[r];
             sorted.clear();
-            sorted.reserve(rotation_chain_.padded_dim());
+            sorted.reserve(pdim);
 
-            for (size_t i = 0; i < rotation_chain_.padded_dim(); ++i) {
-                sorted.emplace_back(i, std::abs(buffer_[i]), buffer_[i] < 0);
+            for (size_t i = 0; i < pdim; ++i) {
+                sorted.emplace_back(i, std::abs(tls_buffer[i]), tls_buffer[i] < 0);
             }
 
             // Sort by absolute value descending

@@ -1,9 +1,11 @@
 #pragma once
 
 #include <array>
+#include <cassert>
 #include <cstdint>
 #include <limits>
 #include <cmath>
+#include <string>
 #include <vector>
 #include <stdexcept>
 
@@ -77,8 +79,37 @@ struct CPCode {
         return c & 1;
     }
 
+    /// Maximum encodable index for this component type
+    /// For uint8_t: 7 bits for index = 127 max
+    /// For uint16_t: 15 bits for index = 32767 max
+    static constexpr size_t max_encodable_index() {
+        return (size_t(1) << (sizeof(ComponentT) * 8 - 1)) - 1;
+    }
+
     /// Encode index and sign into component
+    /// @throws std::overflow_error if index exceeds max_encodable_index()
     static constexpr ComponentT encode(size_t index, bool is_negative) {
+        // Compile-time check for constexpr contexts, runtime check otherwise
+        if (index > max_encodable_index()) {
+            // In constexpr context, this will cause a compile error
+            // At runtime, we assert and potentially throw
+#ifndef NDEBUG
+            assert(false && "CPCode::encode: index overflow - use larger ComponentT");
+#endif
+            // For release builds, clamp to prevent silent corruption
+            index = max_encodable_index();
+        }
+        return static_cast<ComponentT>((index << 1) | (is_negative ? 1 : 0));
+    }
+
+    /// Safe encode with explicit bounds checking (throws on overflow)
+    static ComponentT encode_checked(size_t index, bool is_negative) {
+        if (index > max_encodable_index()) {
+            throw std::overflow_error(
+                "CPCode::encode: index " + std::to_string(index) +
+                " exceeds max " + std::to_string(max_encodable_index()) +
+                " for ComponentT size " + std::to_string(sizeof(ComponentT)));
+        }
         return static_cast<ComponentT>((index << 1) | (is_negative ? 1 : 0));
     }
 

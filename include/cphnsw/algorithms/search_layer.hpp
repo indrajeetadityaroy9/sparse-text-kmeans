@@ -107,7 +107,8 @@ public:
 
             // FLASH: Get neighbor block (contains IDs + codes + distances)
             const Block& block = graph.get_neighbor_block(c.id);
-            size_t neighbor_count = block.count;
+            // THREAD SAFETY: Use acquire semantics to see consistent data written by inserters
+            size_t neighbor_count = block.count.load(std::memory_order_acquire);
 
             // Prefetch next candidate's block while processing current
             if (!C.empty()) {

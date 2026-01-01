@@ -828,6 +828,8 @@ inline void asymmetric_search_distance_batch_soa_avx2_8(
 /**
  * AVX2 batch wrapper that processes neighbors in groups of 8.
  */
+// Template specialization for K=32 (only when AVX-512 is NOT available)
+#if !CPHNSW_HAS_AVX512
 template <>
 inline void asymmetric_search_distance_batch_soa<uint8_t, 32>(
     const CPQuery<uint8_t, 32>& query,
@@ -856,6 +858,7 @@ inline void asymmetric_search_distance_batch_soa<uint8_t, 32>(
         out_distances[n] = -score;
     }
 }
+#endif  // !CPHNSW_HAS_AVX512
 
 /**
  * K=16 version
@@ -887,6 +890,8 @@ inline void asymmetric_search_distance_batch_soa_avx2_8_k16(
     _mm256_storeu_ps(out_distances, neg_scores);
 }
 
+// Template specialization for K=16 (only when AVX-512 is NOT available)
+#if !CPHNSW_HAS_AVX512
 template <>
 inline void asymmetric_search_distance_batch_soa<uint8_t, 16>(
     const CPQuery<uint8_t, 16>& query,
@@ -911,6 +916,7 @@ inline void asymmetric_search_distance_batch_soa<uint8_t, 16>(
         out_distances[n] = -score;
     }
 }
+#endif  // !CPHNSW_HAS_AVX512
 
 #endif  // CPHNSW_HAS_AVX2
 
@@ -1070,6 +1076,124 @@ inline void asymmetric_search_distance_batch_soa_avx512_k64(
         }
         out_distances[n] = -score;
     }
+}
+
+/**
+ * AVX-512 SIMD batch distance for K=16 - processes 16 neighbors at once.
+ */
+inline void asymmetric_search_distance_batch_soa_avx512_16_k16(
+    const CPQuery<uint8_t, 16>& query,
+    const uint8_t codes_transposed[16][64],
+    size_t start_idx,
+    float* out_distances) {
+
+    __m512 scores = _mm512_setzero_ps();
+
+    for (size_t k = 0; k < 16; ++k) {
+        // Load 16 bytes contiguously
+        __m128i raw_bytes = _mm_loadu_si128(
+            reinterpret_cast<const __m128i*>(&codes_transposed[k][start_idx]));
+
+        // Zero-extend 16 bytes to 16 x 32-bit integers
+        __m512i raw_32 = _mm512_cvtepu8_epi32(raw_bytes);
+
+        // Extract indices and signs
+        __m512i indices = _mm512_srli_epi32(raw_32, 1);
+        __m512i signs = _mm512_and_si512(raw_32, _mm512_set1_epi32(1));
+
+        // Gather values
+        const float* base = query.rotated_vecs[k].data();
+        __m512 vals = _mm512_i32gather_ps(indices, base, 4);
+
+        // Apply signs
+        __m512 sign_mask = _mm512_castsi512_ps(_mm512_slli_epi32(signs, 31));
+        vals = _mm512_xor_ps(vals, sign_mask);
+
+        scores = _mm512_add_ps(scores, vals);
+    }
+
+    // Negate and store
+    __m512 neg_scores = _mm512_xor_ps(scores, _mm512_set1_ps(-0.0f));
+    _mm512_storeu_ps(out_distances, neg_scores);
+}
+
+/**
+ * AVX-512 batch wrapper for K=16.
+ */
+inline void asymmetric_search_distance_batch_soa_avx512_k16(
+    const CPQuery<uint8_t, 16>& query,
+    const uint8_t codes_transposed[16][64],
+    size_t num_neighbors,
+    AsymmetricDist* out_distances) {
+
+    size_t n = 0;
+
+    // Process 16 neighbors at a time with AVX-512
+    for (; n + 16 <= num_neighbors; n += 16) {
+        asymmetric_search_distance_batch_soa_avx512_16_k16(
+            query, codes_transposed, n, out_distances + n);
+    }
+
+#if CPHNSW_HAS_AVX2
+    // Handle remaining with AVX2 (8 at a time)
+    for (; n + 8 <= num_neighbors; n += 8) {
+        asymmetric_search_distance_batch_soa_avx2_8_k16(
+            query, codes_transposed, n, out_distances + n);
+    }
+#endif
+
+    // Scalar remainder
+    for (; n < num_neighbors; ++n) {
+        float score = 0.0f;
+        for (size_t k = 0; k < 16; ++k) {
+            uint8_t raw = codes_transposed[k][n];
+            size_t idx = raw >> 1;
+            bool is_negative = raw & 1;
+            float val = query.rotated_vecs[k][idx];
+            score += is_negative ? -val : val;
+        }
+        out_distances[n] = -score;
+    }
+}
+
+/**
+ * Template specialization for K=32, uint8_t with AVX-512.
+ * Overrides the AVX2 version when AVX-512 is available.
+ */
+template <>
+inline void asymmetric_search_distance_batch_soa<uint8_t, 32>(
+    const CPQuery<uint8_t, 32>& query,
+    const uint8_t codes_transposed[32][64],
+    size_t num_neighbors,
+    AsymmetricDist* out_distances) {
+
+    asymmetric_search_distance_batch_soa_avx512(query, codes_transposed, num_neighbors, out_distances);
+}
+
+/**
+ * Template specialization for K=16, uint8_t with AVX-512.
+ */
+template <>
+inline void asymmetric_search_distance_batch_soa<uint8_t, 16>(
+    const CPQuery<uint8_t, 16>& query,
+    const uint8_t codes_transposed[16][64],
+    size_t num_neighbors,
+    AsymmetricDist* out_distances) {
+
+    asymmetric_search_distance_batch_soa_avx512_k16(query, codes_transposed, num_neighbors, out_distances);
+}
+
+/**
+ * Template specialization for K=64, uint8_t with AVX-512.
+ */
+template <>
+inline void asymmetric_search_distance_batch_soa<uint8_t, 64>(
+    const CPQuery<uint8_t, 64>& query,
+    const uint8_t codes_transposed[64][64],
+    size_t num_neighbors,
+    AsymmetricDist* out_distances) {
+
+    asymmetric_search_distance_batch_soa_avx512_k64(query, codes_transposed, num_neighbors, out_distances);
 }
 
 #endif  // CPHNSW_HAS_AVX512

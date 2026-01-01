@@ -140,7 +140,10 @@ struct alignas(FLASH_CACHE_LINE) NeighborBlock {
     float distances[FLASH_MAX_M];
 
     /// Actual number of neighbors (0 to M)
-    uint8_t count;
+    /// THREAD SAFETY: Atomic to allow lock-free reads during search.
+    /// Writers must use release semantics after updating ids/codes.
+    /// Readers should use acquire semantics to see consistent data.
+    std::atomic<uint8_t> count;
 
     /// Per-node spinlock for thread-safe updates
     mutable Spinlock lock;
@@ -150,7 +153,7 @@ struct alignas(FLASH_CACHE_LINE) NeighborBlock {
                                           sizeof(ComponentT) * K * FLASH_MAX_M +
                                           sizeof(uint8_t) * K * FLASH_MAX_M +
                                           sizeof(float) * FLASH_MAX_M +
-                                          sizeof(uint8_t) + sizeof(Spinlock)) % FLASH_CACHE_LINE)];
+                                          sizeof(std::atomic<uint8_t>) + sizeof(Spinlock)) % FLASH_CACHE_LINE)];
 
     NeighborBlock() : count(0), lock() {
         std::fill(std::begin(ids), std::end(ids), INVALID_NODE);
@@ -162,7 +165,7 @@ struct alignas(FLASH_CACHE_LINE) NeighborBlock {
     }
 
     // Copy constructor: copy data, create new lock
-    NeighborBlock(const NeighborBlock& other) : count(other.count), lock() {
+    NeighborBlock(const NeighborBlock& other) : count(other.count.load(std::memory_order_relaxed)), lock() {
         std::copy(std::begin(other.ids), std::end(other.ids), std::begin(ids));
         for (size_t k = 0; k < K; ++k) {
             std::copy(std::begin(other.codes_transposed[k]), std::end(other.codes_transposed[k]),
@@ -174,7 +177,7 @@ struct alignas(FLASH_CACHE_LINE) NeighborBlock {
     }
 
     // Move constructor: move data, create new lock
-    NeighborBlock(NeighborBlock&& other) noexcept : count(other.count), lock() {
+    NeighborBlock(NeighborBlock&& other) noexcept : count(other.count.load(std::memory_order_relaxed)), lock() {
         std::copy(std::begin(other.ids), std::end(other.ids), std::begin(ids));
         for (size_t k = 0; k < K; ++k) {
             std::copy(std::begin(other.codes_transposed[k]), std::end(other.codes_transposed[k]),
@@ -188,7 +191,7 @@ struct alignas(FLASH_CACHE_LINE) NeighborBlock {
     // Copy assignment: copy data, keep own lock
     NeighborBlock& operator=(const NeighborBlock& other) {
         if (this != &other) {
-            count = other.count;
+            count.store(other.count.load(std::memory_order_relaxed), std::memory_order_relaxed);
             std::copy(std::begin(other.ids), std::end(other.ids), std::begin(ids));
             for (size_t k = 0; k < K; ++k) {
                 std::copy(std::begin(other.codes_transposed[k]), std::end(other.codes_transposed[k]),
@@ -204,7 +207,7 @@ struct alignas(FLASH_CACHE_LINE) NeighborBlock {
     // Move assignment: move data, keep own lock
     NeighborBlock& operator=(NeighborBlock&& other) noexcept {
         if (this != &other) {
-            count = other.count;
+            count.store(other.count.load(std::memory_order_relaxed), std::memory_order_relaxed);
             std::copy(std::begin(other.ids), std::end(other.ids), std::begin(ids));
             for (size_t k = 0; k < K; ++k) {
                 std::copy(std::begin(other.codes_transposed[k]), std::end(other.codes_transposed[k]),
@@ -406,25 +409,28 @@ public:
 
     /**
      * NSW: Get neighbor count for a node.
+     * THREAD SAFETY: Uses acquire semantics to ensure visibility of neighbor data.
      */
     size_t get_neighbor_count(NodeId id) const {
-        return neighbor_blocks_[id].count;
+        return neighbor_blocks_[id].count.load(std::memory_order_acquire);
     }
 
     /**
      * NSW: Get neighbors for a node (legacy API).
+     * THREAD SAFETY: Uses acquire semantics on count read.
      *
      * @param id     Node ID
      * @return       Pointer to neighbor array and count
      */
     std::pair<const NodeId*, size_t> get_neighbors(NodeId id) const {
         const auto& block = neighbor_blocks_[id];
-        return {block.ids, block.count};
+        return {block.ids, block.count.load(std::memory_order_acquire)};
     }
 
     /**
      * NSW + Flash: Add a neighbor to a node.
      * Copies neighbor's code into the block for cache locality.
+     * NOTE: Not thread-safe. Use add_neighbor_safe for concurrent access.
      *
      * @param id        Node ID
      * @param neighbor  Neighbor to add
@@ -432,7 +438,7 @@ public:
      */
     bool add_neighbor(NodeId id, NodeId neighbor) {
         auto& block = neighbor_blocks_[id];
-        size_t current_count = block.count;
+        size_t current_count = block.count.load(std::memory_order_relaxed);
 
         if (current_count >= params_.M) {
             return false;
@@ -444,33 +450,36 @@ public:
         // FLASH: Copy neighbor's code for cache locality during search
         block.set_neighbor_code(current_count, codes_[neighbor]);
 
-        block.count = static_cast<uint8_t>(current_count + 1);
+        // Release semantics: ensure ID and code writes are visible before count update
+        block.count.store(static_cast<uint8_t>(current_count + 1), std::memory_order_release);
         return true;
     }
 
     /**
      * NSW + Flash: Set neighbors for a node (replaces existing).
      * Copies all neighbor codes into the block.
+     * NOTE: Not thread-safe. Use set_neighbors_safe for concurrent access.
      *
      * @param id         Node ID
      * @param neighbors  New neighbor list
      */
     void set_neighbors(NodeId id, const std::vector<NodeId>& neighbors) {
         auto& block = neighbor_blocks_[id];
-        size_t count = std::min(neighbors.size(), params_.M);
+        size_t new_count = std::min(neighbors.size(), params_.M);
 
         // Copy neighbors and their codes
-        for (size_t i = 0; i < count; ++i) {
+        for (size_t i = 0; i < new_count; ++i) {
             block.ids[i] = neighbors[i];
             block.set_neighbor_code(i, codes_[neighbors[i]]);
         }
 
         // Clear remaining slots
-        for (size_t i = count; i < params_.M; ++i) {
+        for (size_t i = new_count; i < params_.M; ++i) {
             block.ids[i] = INVALID_NODE;
         }
 
-        block.count = static_cast<uint8_t>(count);
+        // Release semantics: ensure all writes are visible before count update
+        block.count.store(static_cast<uint8_t>(new_count), std::memory_order_release);
     }
 
     /**
@@ -481,22 +490,54 @@ public:
      * compare_exchange_weak can spuriously fail, causing incorrect "already visited"
      * returns that skip nodes and degrade search recall.
      *
+     * WRAP-AROUND HANDLING:
+     * Query IDs are 64-bit, so wrap-around after 2^64 queries is theoretically
+     * possible but practically never occurs (584 years at 1 billion QPS).
+     * If query_id is 0, we skip the visited check to handle the edge case
+     * where wrap-around occurs or after reset_visited() is called.
+     *
      * @param id        Node ID
-     * @param query_id  Current query ID
+     * @param query_id  Current query ID (must be > 0)
      * @return          true if already visited, false if newly marked
      */
     bool check_and_mark_visited(NodeId id, uint64_t query_id) const {
+        // Handle query_id = 0 edge case (wrap-around or after reset)
+        // Treat as never visited to force fresh traversal
+        if (query_id == 0) {
+            visited_markers_[id]->store(0, std::memory_order_relaxed);
+            return false;
+        }
         uint64_t old = visited_markers_[id]->exchange(query_id, std::memory_order_relaxed);
         return (old == query_id);  // true if already visited
     }
 
     /**
-     * Reset visited markers (alternative to incrementing query_id).
+     * Reset visited markers.
+     * Call this periodically if query_id counter approaches wrap-around,
+     * or before reusing query IDs.
+     *
+     * After calling reset_visited(), the next query_id should start from 1
+     * (not 0) to ensure check_and_mark_visited works correctly.
      */
     void reset_visited() {
         for (auto& marker : visited_markers_) {
             marker->store(0, std::memory_order_relaxed);
         }
+    }
+
+    /**
+     * Check if query counter needs reset to avoid wrap-around.
+     * Returns true if the counter is within 1 billion of UINT64_MAX.
+     *
+     * Usage:
+     *   if (graph.needs_visited_reset(query_counter.load())) {
+     *       graph.reset_visited();
+     *       query_counter.store(1);  // Start from 1, not 0
+     *   }
+     */
+    static bool needs_visited_reset(uint64_t current_query_id) {
+        constexpr uint64_t RESET_THRESHOLD = std::numeric_limits<uint64_t>::max() - 1'000'000'000ULL;
+        return current_query_id >= RESET_THRESHOLD;
     }
 
     /**
@@ -512,7 +553,8 @@ public:
 
         Spinlock::Guard guard(block.lock);
 
-        size_t current_count = block.count;
+        // Read with relaxed since we hold the lock
+        size_t current_count = block.count.load(std::memory_order_relaxed);
 
         // Check for duplicate to prevent multiple threads adding same neighbor
         for (size_t i = 0; i < current_count; ++i) {
@@ -527,7 +569,11 @@ public:
 
         block.ids[current_count] = neighbor;
         block.set_neighbor_code(current_count, codes_[neighbor]);
-        block.count = static_cast<uint8_t>(current_count + 1);
+
+        // Release semantics: ensure writes visible before count update
+        // The spinlock unlock provides release, but we use release here
+        // to ensure correct ordering even for lock-free readers
+        block.count.store(static_cast<uint8_t>(current_count + 1), std::memory_order_release);
 
         return true;
     }
@@ -537,6 +583,9 @@ public:
      *
      * CRITICAL OPTIMIZATION: Uses cached distances in block for O(1) pruning.
      * Also copies neighbor code for Flash cache locality.
+     *
+     * THREAD SAFETY: Uses per-node spinlock. Count update uses release
+     * semantics to ensure lock-free readers see consistent data.
      *
      * @param id        Node ID
      * @param neighbor  Neighbor to add
@@ -548,7 +597,8 @@ public:
 
         Spinlock::Guard guard(block.lock);
 
-        size_t current_count = block.count;
+        // Read with relaxed since we hold the lock
+        size_t current_count = block.count.load(std::memory_order_relaxed);
 
         // Check for duplicate
         for (size_t i = 0; i < current_count; ++i) {
@@ -562,7 +612,8 @@ public:
             block.ids[current_count] = neighbor;
             block.set_neighbor_code(current_count, codes_[neighbor]);
             block.distances[current_count] = dist;
-            block.count = static_cast<uint8_t>(current_count + 1);
+            // Release semantics for lock-free readers
+            block.count.store(static_cast<uint8_t>(current_count + 1), std::memory_order_release);
             return true;
         }
 
@@ -578,6 +629,7 @@ public:
         }
 
         // Replace worst if new neighbor is better
+        // Note: No count change, so no release store needed
         if (dist < worst_dist) {
             block.ids[worst_idx] = neighbor;
             block.set_neighbor_code(worst_idx, codes_[neighbor]);
@@ -600,20 +652,21 @@ public:
 
         Spinlock::Guard guard(block.lock);
 
-        size_t count = std::min(neighbors.size(), params_.M);
+        size_t new_count = std::min(neighbors.size(), params_.M);
 
         // Copy neighbors and their codes
-        for (size_t i = 0; i < count; ++i) {
+        for (size_t i = 0; i < new_count; ++i) {
             block.ids[i] = neighbors[i];
             block.set_neighbor_code(i, codes_[neighbors[i]]);
         }
 
         // Clear remaining slots
-        for (size_t i = count; i < params_.M; ++i) {
+        for (size_t i = new_count; i < params_.M; ++i) {
             block.ids[i] = INVALID_NODE;
         }
 
-        block.count = static_cast<uint8_t>(count);
+        // Release semantics for lock-free readers
+        block.count.store(static_cast<uint8_t>(new_count), std::memory_order_release);
     }
 
     // NOTE: set_entry_point_safe removed for NSW flatten (no hierarchy)
@@ -637,13 +690,15 @@ public:
 
         Spinlock::Guard guard(block.lock);
 
-        size_t current_count = block.count;
+        // Read with relaxed since we hold the lock
+        size_t current_count = block.count.load(std::memory_order_relaxed);
 
         // Case 1: Not full - just add
         if (current_count < params_.M) {
             block.ids[current_count] = new_neighbor;
             block.set_neighbor_code(current_count, codes_[new_neighbor]);
-            block.count = static_cast<uint8_t>(current_count + 1);
+            // Release semantics for lock-free readers
+            block.count.store(static_cast<uint8_t>(current_count + 1), std::memory_order_release);
             return;
         }
 
@@ -673,7 +728,8 @@ public:
         for (size_t i = keep; i < params_.M; ++i) {
             block.ids[i] = INVALID_NODE;
         }
-        block.count = static_cast<uint8_t>(keep);
+        // Release semantics for lock-free readers
+        block.count.store(static_cast<uint8_t>(keep), std::memory_order_release);
     }
 
     /**
@@ -727,15 +783,16 @@ public:
             const auto& neighbors = neighbor_lists[i];
             auto& block = neighbor_blocks_[i];
 
-            size_t count = std::min(neighbors.size(), params_.M);
-            for (size_t j = 0; j < count; ++j) {
+            size_t new_count = std::min(neighbors.size(), params_.M);
+            for (size_t j = 0; j < new_count; ++j) {
                 NodeId neighbor = neighbors[j];
                 if (neighbor < N) {
                     block.ids[j] = neighbor;
                     block.set_neighbor_code(j, codes_[neighbor]);
                 }
             }
-            block.count = static_cast<uint8_t>(count);
+            // Release semantics (though this is during single-phase init)
+            block.count.store(static_cast<uint8_t>(new_count), std::memory_order_release);
         }
     }
 
@@ -774,16 +831,17 @@ public:
             auto& block = neighbor_blocks_[i];
             const uint32_t* row = neighbors + i * k;
 
-            size_t count = 0;
-            for (size_t j = 0; j < k && count < params_.M; ++j) {
+            size_t new_count = 0;
+            for (size_t j = 0; j < k && new_count < params_.M; ++j) {
                 uint32_t neighbor = row[j];
                 if (neighbor != UINT32_MAX && neighbor < N && neighbor != i) {
-                    block.ids[count] = static_cast<NodeId>(neighbor);
-                    block.set_neighbor_code(count, codes_[neighbor]);
-                    ++count;
+                    block.ids[new_count] = static_cast<NodeId>(neighbor);
+                    block.set_neighbor_code(new_count, codes_[neighbor]);
+                    ++new_count;
                 }
             }
-            block.count = static_cast<uint8_t>(count);
+            // Release semantics (though this is during single-phase init)
+            block.count.store(static_cast<uint8_t>(new_count), std::memory_order_release);
         }
     }
 

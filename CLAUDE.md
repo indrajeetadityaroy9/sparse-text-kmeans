@@ -55,26 +55,39 @@ include/cphnsw/
 │   ├── types.hpp          # CPCode, CPQuery, CPHNSWParams, SearchResult
 │   └── debug.hpp          # Debug macros and validation utilities
 ├── quantizer/
-│   ├── hadamard.hpp       # Fast Hadamard Transform (scalar, AVX2, AVX-512)
-│   ├── rotation_chain.hpp # Ψ(x) = H D₃ H D₂ H D₁ x rotation encoding
-│   ├── cp_encoder.hpp     # Vector → CPCode quantization pipeline
-│   └── multiprobe.hpp     # Multiprobe sequence generation
+│   ├── quantizer_policy.hpp  # Abstract quantizer interface for metric consistency
+│   ├── cp_fht_policy.hpp     # FHT-based CP-LSH as QuantizerPolicy
+│   ├── aitq_quantizer.hpp    # A-ITQ: Asymmetric ITQ with learned projections
+│   ├── hadamard.hpp          # Fast Hadamard Transform (scalar, AVX2, AVX-512)
+│   ├── rotation_chain.hpp    # Ψ(x) = H D₃ H D₂ H D₁ x rotation encoding
+│   ├── cp_encoder.hpp        # Vector → CPCode quantization pipeline
+│   └── multiprobe.hpp        # Multiprobe sequence generation
 ├── distance/
 │   └── hamming.hpp        # SIMD Hamming distance + asymmetric search distance
 ├── graph/
 │   ├── flat_graph.hpp     # FlatHNSWGraph: contiguous memory layout graph
 │   └── priority_queue.hpp # Min/Max heaps for search algorithms
 ├── algorithms/
-│   ├── search_layer.hpp   # SEARCH-LAYER (Algorithm 2)
-│   ├── select_neighbors.hpp # SELECT-NEIGHBORS-HEURISTIC (Algorithm 4)
-│   ├── insert.hpp         # INSERT (Algorithm 3) + hybrid/parallel variants
-│   └── knn_search.hpp     # K-NN-SEARCH with multiprobe support
+│   ├── search_layer.hpp        # SEARCH-LAYER (Algorithm 2)
+│   ├── search_layer_policy.hpp # Quantizer-agnostic search for metric consistency
+│   ├── select_neighbors.hpp    # SELECT-NEIGHBORS-HEURISTIC (Algorithm 4)
+│   ├── insert.hpp              # INSERT (Algorithm 3) + hybrid/parallel variants
+│   ├── knn_search.hpp          # K-NN-SEARCH with multiprobe support
+│   └── rank_pruning.hpp        # Rank-based neighbor pruning
+├── calibration/
+│   ├── finger_calibration.hpp    # Distance calibration utilities
+│   └── calibrated_distance.hpp   # Calibrated distance metrics
+├── cuda/
+│   ├── gpu_encoder.cuh    # GPU batch encoding headers
+│   └── gpu_knn_graph.cuh  # GPU k-NN graph construction headers
 └── index/
-    └── cp_hnsw_index.hpp  # Main public API: CPHNSWIndex<ComponentT, K>
+    ├── cp_hnsw_index.hpp  # Main public API: CPHNSWIndex<ComponentT, K>
+    └── policy_index.hpp   # Quantizer-agnostic index: PolicyIndex<QuantizerT>
 ```
 
 **CUDA code** (compiled, not header-only):
 - `src/cuda/gpu_encoder.cu` - GPU kernels for batch encoding
+- `src/cuda/gpu_knn_graph.cu` - GPU k-NN graph construction kernels
 
 **Key type aliases**:
 - `CPHNSWIndex8` = `CPHNSWIndex<uint8_t, 16>` for dim ≤ 128
@@ -90,6 +103,29 @@ include/cphnsw/
 **Connectivity Repair**: Optional pass (enable with `-DCPHNSW_ENABLE_CONNECTIVITY_REPAIR`) that connects isolated nodes after parallel construction.
 
 **Thread Safety**: Uses per-node spinlocks and atomic query counters. Each search gets a fresh query_id to prevent stale visited marker bugs.
+
+## Quantizer Policy Architecture (Metric Alignment)
+
+The codebase supports pluggable quantizers through the `QuantizerPolicy` abstraction. This fixes the **metric mismatch problem** where building the graph with one distance metric but searching with another causes massive recall degradation.
+
+**Available Quantizers:**
+- `CPFHTPolicy<ComponentT, K>`: FHT-based Cross-Polytope LSH (random projections)
+- `AITQQuantizer<K>`: Asymmetric ITQ with learned projections (data-dependent)
+
+**Usage:**
+```cpp
+// FHT-based (random projections, no training needed)
+auto fht = std::make_shared<CPFHTPolicy<uint8_t, 32>>(dim, seed);
+PolicyIndex<CPFHTPolicy<uint8_t, 32>> index(params, fht);
+
+// A-ITQ (learned projections, requires training)
+auto aitq = std::make_shared<AITQQuantizer<256>>(dim, train_data, N);
+PolicyIndex<AITQQuantizer<256>> index(params, aitq);
+```
+
+**Key Insight:** Both construction and search use the quantizer's `search_distance()` function, ensuring the graph topology is optimized for the search metric.
+
+**A-ITQ AVX-512 Kernels:** The A-ITQ quantizer includes AVX-512 optimized kernels for batch distance computation, achieving 5-10x speedup over scalar.
 
 ## CMake Options
 
