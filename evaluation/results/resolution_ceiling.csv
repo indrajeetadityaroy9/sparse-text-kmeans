@@ -1,1 +1,4 @@
-K,BruteForce_Recall,Graph_Recall,Rerank_Recall
+K,Dataset,Graph_Recall,Hybrid_Recall_rr200,QPS
+32,100K,0.304,0.870,2649
+64,100K,0.449,0.967,1153
+64,500K,0.401,0.937,992

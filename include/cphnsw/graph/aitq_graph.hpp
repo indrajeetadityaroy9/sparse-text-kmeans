@@ -48,7 +48,8 @@ struct alignas(64) AITQNeighborBlock {
     float distances[AITQ_MAX_M];
 
     /// Actual neighbor count (0 to AITQ_MAX_M)
-    uint8_t count;
+    /// ATOMIC: Readers can observe consistent count without holding lock
+    std::atomic<uint8_t> count;
 
     /// Per-node lock for thread-safe modifications
     std::atomic_flag lock_ = ATOMIC_FLAG_INIT;
@@ -176,7 +177,7 @@ public:
     /// Get neighbors (IDs and count)
     std::pair<const NodeId*, size_t> get_neighbors(NodeId id) const {
         const auto& block = neighbor_blocks_[id];
-        return {block.ids, block.count};
+        return {block.ids, block.count.load(std::memory_order_acquire)};
     }
 
     /**
@@ -188,7 +189,8 @@ public:
         block.lock();
 
         // Check if already present
-        for (size_t i = 0; i < block.count; ++i) {
+        uint8_t current_count = block.count.load(std::memory_order_relaxed);
+        for (size_t i = 0; i < current_count; ++i) {
             if (block.ids[i] == neighbor) {
                 block.unlock();
                 return false;
@@ -196,13 +198,14 @@ public:
         }
 
         // Check if full
-        if (block.count >= params_.M) {
+        if (current_count >= params_.M) {
             block.unlock();
             return false;
         }
 
         // Add neighbor
-        size_t idx = block.count++;
+        size_t idx = current_count;
+        block.count.store(current_count + 1, std::memory_order_release);
         block.ids[idx] = neighbor;
         block.set_neighbor_code(idx, codes_[neighbor]);
         block.distances[idx] = 0.0f;  // Unknown distance
@@ -220,7 +223,8 @@ public:
         block.lock();
 
         // Check if already present
-        for (size_t i = 0; i < block.count; ++i) {
+        uint8_t current_count = block.count.load(std::memory_order_relaxed);
+        for (size_t i = 0; i < current_count; ++i) {
             if (block.ids[i] == neighbor) {
                 // Update distance if better
                 if (dist < block.distances[i]) {
@@ -232,8 +236,9 @@ public:
         }
 
         // If not full, just add
-        if (block.count < params_.M) {
-            size_t idx = block.count++;
+        if (current_count < params_.M) {
+            size_t idx = current_count;
+            block.count.store(current_count + 1, std::memory_order_release);
             block.ids[idx] = neighbor;
             block.set_neighbor_code(idx, codes_[neighbor]);
             block.distances[idx] = dist;
@@ -244,7 +249,7 @@ public:
         // Full: find worst (maximum distance) and replace if new is better
         size_t worst_idx = 0;
         float worst_dist = block.distances[0];
-        for (size_t i = 1; i < block.count; ++i) {
+        for (size_t i = 1; i < current_count; ++i) {
             if (block.distances[i] > worst_dist) {
                 worst_dist = block.distances[i];
                 worst_idx = i;
@@ -308,17 +313,18 @@ public:
             visited_markers_[i] = 0;
 
             auto& block = neighbor_blocks_[i];
-            block.count = 0;
+            uint8_t cnt = 0;
 
             const auto& neighbors = neighbor_lists[i];
             for (size_t j = 0; j < std::min(neighbors.size(), params_.M); ++j) {
                 NodeId neighbor = neighbors[j];
                 if (neighbor < N && neighbor != i) {
-                    size_t idx = block.count++;
-                    block.ids[idx] = neighbor;
-                    block.set_neighbor_code(idx, codes[neighbor]);
+                    block.ids[cnt] = neighbor;
+                    block.set_neighbor_code(cnt, codes[neighbor]);
+                    ++cnt;
                 }
             }
+            block.count.store(cnt, std::memory_order_release);
         }
     }
 

@@ -20,6 +20,10 @@
 #include "metrics/recall.hpp"
 #include "utils/common.hpp"
 
+#ifdef CPHNSW_USE_CUDA
+#include "../include/cphnsw/cuda/gpu_knn_graph.cuh"
+#endif
+
 #include <iostream>
 #include <iomanip>
 #include <fstream>
@@ -38,6 +42,55 @@
 
 using namespace cphnsw;
 using namespace cphnsw::eval;
+
+// =============================================================================
+// Ground Truth Recomputation (for --limit subsets)
+// =============================================================================
+
+/**
+ * Recompute ground truth for a subset of the dataset.
+ *
+ * When using --limit, the original ground truth contains IDs outside the subset.
+ * This function computes correct ground truth for the subset using brute force.
+ */
+void recompute_ground_truth(Dataset& ds, size_t k) {
+    std::cout << "  Recomputing ground truth for subset...\n";
+    Timer timer;
+    timer.start();
+
+    ds.ground_truth.resize(ds.num_queries);
+    ds.k_gt = k;
+
+#ifdef CPHNSW_USE_OPENMP
+    #pragma omp parallel for schedule(dynamic, 10)
+#endif
+    for (size_t q = 0; q < ds.num_queries; ++q) {
+        const Float* qv = ds.query_vectors.data() + q * ds.dim;
+
+        // Compute dot products with all base vectors (using cosine similarity)
+        std::vector<std::pair<float, NodeId>> scores(ds.num_base);
+
+        for (size_t i = 0; i < ds.num_base; ++i) {
+            const Float* bv = ds.base_vectors.data() + i * ds.dim;
+            float dot = 0;
+            for (size_t d = 0; d < ds.dim; ++d) {
+                dot += qv[d] * bv[d];
+            }
+            scores[i] = {-dot, static_cast<NodeId>(i)};  // Negative for min-heap sort
+        }
+
+        // Partial sort for top-k
+        std::partial_sort(scores.begin(), scores.begin() + k, scores.end());
+
+        ds.ground_truth[q].resize(k);
+        for (size_t i = 0; i < k; ++i) {
+            ds.ground_truth[q][i] = scores[i].second;
+        }
+    }
+
+    std::cout << "  Ground truth computed in " << std::fixed << std::setprecision(1)
+              << timer.elapsed_ms() << " ms\n";
+}
 
 // =============================================================================
 // Compile-time K selection (set via -DEVAL_K=16/32/64)
@@ -85,7 +138,14 @@ void experiment1_recall_vs_qps(const Dataset& sift, const std::string& output_di
     timer.start();
 
     CPHNSWIndex<uint8_t, COMPILE_TIME_K> index(sift.dim, config.M, config.ef_construction);
+
+#ifdef CPHNSW_USE_CUDA
+    std::cout << "[GPU MODE] Using GPU-accelerated k-NN graph construction\n";
+    index.build_with_gpu_knn(sift.base_vectors.data(), sift.num_base, 64);
+#else
+    std::cout << "[CPU MODE] Using CPU parallel construction\n";
     index.add_batch_parallel(sift.base_vectors.data(), sift.num_base);
+#endif
 
     double build_time = timer.elapsed_s();
     std::cout << "Build time: " << format_number(build_time) << "s ("
@@ -196,7 +256,11 @@ void experiment2_build_scalability(const Dataset& sift, const std::string& outpu
         timer.start();
 
         CPHNSWIndex<uint8_t, COMPILE_TIME_K> index(sift.dim, config.M, config.ef_construction);
+#ifdef CPHNSW_USE_CUDA
+        index.build_with_gpu_knn(sift.base_vectors.data(), sift.num_base, 64);
+#else
         index.add_batch_parallel(sift.base_vectors.data(), sift.num_base);
+#endif
 
         double build_time = timer.elapsed_s();
         double throughput = sift.num_base / build_time;
@@ -250,7 +314,11 @@ void experiment3_topology_ablation(const Dataset& sift, const std::string& outpu
     // Method 1: Hybrid (True Cosine edges) - the production path
     {
         CPHNSWIndex<uint8_t, COMPILE_TIME_K> index(sift.dim, config.M, config.ef_construction);
+#ifdef CPHNSW_USE_CUDA
+        index.build_with_gpu_knn(sift.base_vectors.data(), ablation_size, 64);
+#else
         index.add_batch_parallel(sift.base_vectors.data(), ablation_size);
+#endif
 
         size_t connected = index.verify_connectivity();
         double connectivity_pct = 100.0 * connected / ablation_size;
@@ -271,16 +339,11 @@ void experiment3_topology_ablation(const Dataset& sift, const std::string& outpu
         csv << "True_Cosine,Hybrid," << connectivity_pct << "," << graph_recall << "\n";
     }
 
-    // Note: For pure CP ablation, we would need to modify the index internals
-    // or create a separate insertion path. For now, document expected behavior:
-    std::cout << "\nNote: Pure CP edge selection requires code modifications.\n";
-    std::cout << "Expected results based on prior experiments:\n";
-    std::cout << std::setw(20) << "CP_Asymmetric" << std::setw(16) << "~67%" << std::setw(16) << "~0.13\n";
-    std::cout << std::setw(20) << "CP_Symmetric" << std::setw(16) << "~48%" << std::setw(16) << "~0.05\n";
-
-    // Add expected values to CSV for plotting
-    csv << "CP_Asymmetric,Pure_CP,67.0,0.13\n";
-    csv << "CP_Symmetric,Pure_CP,48.0,0.05\n";
+    // Note: Pure CP edge selection ablation requires internal code modifications
+    // and is not implemented in this benchmark. The hybrid approach is sufficient
+    // for demonstrating the value of true distance edge selection.
+    std::cout << "\nNote: Pure CP edge selection ablation not implemented.\n";
+    std::cout << "Only Hybrid mode (CP search + true distance edges) is measured.\n";
 
     csv.close();
     std::cout << "\nResults saved to: " << csv_path << "\n";
@@ -375,7 +438,11 @@ void experiment5_memory_footprint(const Dataset& sift, const std::string& output
 
     // Build index
     CPHNSWIndex<uint8_t, COMPILE_TIME_K> index(sift.dim, config.M, config.ef_construction);
+#ifdef CPHNSW_USE_CUDA
+    index.build_with_gpu_knn(sift.base_vectors.data(), sift.num_base, 64);
+#else
     index.add_batch_parallel(sift.base_vectors.data(), sift.num_base);
+#endif
 
     size_t rss_after = get_rss_bytes();
     size_t index_rss = rss_after - rss_before;
@@ -479,7 +546,13 @@ void experiment6_gist(const Dataset& gist, const std::string& output_dir,
 
     // For GIST (960-dim), we use CPHNSWIndex16 with uint16_t
     CPHNSWIndex<uint16_t, COMPILE_TIME_K> index(gist.dim, config.M, config.ef_construction);
+#ifdef CPHNSW_USE_CUDA
+    std::cout << "[GPU MODE] Using GPU-accelerated k-NN graph construction\n";
+    index.build_with_gpu_knn(gist.base_vectors.data(), gist.num_base, 64);
+#else
+    std::cout << "[CPU MODE] Using CPU parallel construction\n";
     index.add_batch_parallel(gist.base_vectors.data(), gist.num_base);
+#endif
 
     double build_time = timer.elapsed_s();
     size_t connected = index.verify_connectivity();
@@ -616,6 +689,10 @@ int main(int argc, char** argv) {
                 sift.base_vectors.resize(sift.num_base * sift.dim);
                 std::cout << "  Limited to " << sift.num_base << " base vectors\n";
             }
+            // CRITICAL: Recompute ground truth for cosine similarity
+            // Original SIFT ground truth is for L2 distance, not cosine
+            std::cout << "  Recomputing ground truth for cosine similarity...\n";
+            recompute_ground_truth(sift, 10);
             have_sift = true;
         } catch (const std::exception& e) {
             std::cerr << "  Error: " << e.what() << "\n";
@@ -633,6 +710,8 @@ int main(int argc, char** argv) {
                 gist.num_base = config.limit;
                 gist.base_vectors.resize(gist.num_base * gist.dim);
                 std::cout << "  Limited to " << gist.num_base << " base vectors\n";
+                // CRITICAL: Recompute ground truth for subset (original GT has invalid IDs)
+                recompute_ground_truth(gist, 10);
             }
             have_gist = true;
         } catch (const std::exception& e) {

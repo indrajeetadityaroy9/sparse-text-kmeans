@@ -133,8 +133,8 @@ __global__ void fused_topk_merge_kernel(
 
 /**
  * Convert similarities to distances and copy to output.
- * Distance = 1 - similarity (proper metric for pruning)
- * For normalized vectors: sqrt(2*(1-sim)) = Euclidean distance
+ * Distance = 1 - similarity (positive metric for pruning algorithm)
+ * For normalized vectors: this is related to squared Euclidean distance
  */
 __global__ void convert_to_distances_kernel(
     const Float* similarities,
@@ -143,7 +143,7 @@ __global__ void convert_to_distances_kernel(
 
     size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx < total) {
-        distances[idx] = 1.0f - similarities[idx];
+        distances[idx] = 1.0f - similarities[idx];  // Positive for pruning
     }
 }
 

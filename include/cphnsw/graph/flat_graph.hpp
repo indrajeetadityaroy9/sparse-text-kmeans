@@ -10,6 +10,8 @@
 #include <limits>
 #include <random>
 #include <new>  // For std::align_val_t
+#include <fstream>
+#include <stdexcept>
 
 // For _mm_pause() on x86
 #if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
@@ -873,6 +875,125 @@ public:
             __builtin_prefetch(&block.codes_transposed[K/2][0], 0, 3);
             // Prefetch distances array
             __builtin_prefetch(&block.distances[0], 0, 3);
+        }
+    }
+
+    // =========================================================================
+    // Serialization API
+    // =========================================================================
+
+    /// Magic number for format validation
+    static constexpr uint32_t GRAPH_MAGIC = 0x43504857;  // "CPHW"
+    static constexpr uint32_t GRAPH_VERSION = 1;
+
+    /**
+     * Save graph to binary stream.
+     *
+     * Format:
+     * - Header: magic (4), version (4), N (8), dim (8), M (8), K (8)
+     * - Codes: N * K * sizeof(ComponentT) bytes
+     * - NeighborBlocks: N * serialized block data
+     *
+     * @param os  Output stream (binary mode)
+     */
+    void save(std::ostream& os) const {
+        // Write header
+        uint32_t magic = GRAPH_MAGIC;
+        uint32_t version = GRAPH_VERSION;
+        uint64_t n = codes_.size();
+        uint64_t dim = params_.dim;
+        uint64_t M = params_.M;
+        uint64_t k_val = K;
+
+        os.write(reinterpret_cast<const char*>(&magic), sizeof(magic));
+        os.write(reinterpret_cast<const char*>(&version), sizeof(version));
+        os.write(reinterpret_cast<const char*>(&n), sizeof(n));
+        os.write(reinterpret_cast<const char*>(&dim), sizeof(dim));
+        os.write(reinterpret_cast<const char*>(&M), sizeof(M));
+        os.write(reinterpret_cast<const char*>(&k_val), sizeof(k_val));
+
+        // Write codes
+        for (const auto& code : codes_) {
+            os.write(reinterpret_cast<const char*>(code.components), sizeof(code.components));
+            os.write(reinterpret_cast<const char*>(code.magnitudes), sizeof(code.magnitudes));
+        }
+
+        // Write neighbor blocks (only essential data, not atomics/locks)
+        for (size_t i = 0; i < neighbor_blocks_.size(); ++i) {
+            const auto& block = neighbor_blocks_[i];
+            uint8_t count = block.count.load(std::memory_order_relaxed);
+
+            os.write(reinterpret_cast<const char*>(&count), sizeof(count));
+            os.write(reinterpret_cast<const char*>(block.ids), sizeof(block.ids));
+            os.write(reinterpret_cast<const char*>(block.codes_transposed), sizeof(block.codes_transposed));
+            os.write(reinterpret_cast<const char*>(block.magnitudes_transposed), sizeof(block.magnitudes_transposed));
+            os.write(reinterpret_cast<const char*>(block.distances), sizeof(block.distances));
+        }
+
+        if (!os) {
+            throw std::runtime_error("Failed to write graph to stream");
+        }
+    }
+
+    /**
+     * Load graph from binary stream.
+     *
+     * @param is  Input stream (binary mode)
+     */
+    void load(std::istream& is) {
+        // Read and validate header
+        uint32_t magic, version;
+        uint64_t n, dim, M, k_val;
+
+        is.read(reinterpret_cast<char*>(&magic), sizeof(magic));
+        is.read(reinterpret_cast<char*>(&version), sizeof(version));
+        is.read(reinterpret_cast<char*>(&n), sizeof(n));
+        is.read(reinterpret_cast<char*>(&dim), sizeof(dim));
+        is.read(reinterpret_cast<char*>(&M), sizeof(M));
+        is.read(reinterpret_cast<char*>(&k_val), sizeof(k_val));
+
+        if (magic != GRAPH_MAGIC) {
+            throw std::runtime_error("Invalid graph file: bad magic number");
+        }
+        if (version != GRAPH_VERSION) {
+            throw std::runtime_error("Unsupported graph version: " + std::to_string(version));
+        }
+        if (k_val != K) {
+            throw std::runtime_error("K mismatch: file has K=" + std::to_string(k_val) +
+                                     ", expected K=" + std::to_string(K));
+        }
+
+        // Update params
+        params_.dim = dim;
+        params_.M = M;
+        params_.k = K;
+
+        // Read codes
+        codes_.resize(n);
+        for (auto& code : codes_) {
+            is.read(reinterpret_cast<char*>(code.components), sizeof(code.components));
+            is.read(reinterpret_cast<char*>(code.magnitudes), sizeof(code.magnitudes));
+        }
+
+        // Read neighbor blocks
+        neighbor_blocks_.resize(n);
+        visited_markers_.resize(n);
+        for (size_t i = 0; i < n; ++i) {
+            auto& block = neighbor_blocks_[i];
+            uint8_t count;
+
+            is.read(reinterpret_cast<char*>(&count), sizeof(count));
+            is.read(reinterpret_cast<char*>(block.ids), sizeof(block.ids));
+            is.read(reinterpret_cast<char*>(block.codes_transposed), sizeof(block.codes_transposed));
+            is.read(reinterpret_cast<char*>(block.magnitudes_transposed), sizeof(block.magnitudes_transposed));
+            is.read(reinterpret_cast<char*>(block.distances), sizeof(block.distances));
+
+            block.count.store(count, std::memory_order_relaxed);
+            visited_markers_[i] = std::make_unique<std::atomic<uint64_t>>(0);
+        }
+
+        if (!is) {
+            throw std::runtime_error("Failed to read graph from stream");
         }
     }
 

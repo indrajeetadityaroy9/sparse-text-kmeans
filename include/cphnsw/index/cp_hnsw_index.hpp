@@ -17,6 +17,7 @@
 #include <numeric>
 #include <algorithm>
 #include <iostream>
+#include <fstream>
 
 #ifdef CPHNSW_USE_OPENMP
 #include <omp.h>
@@ -404,9 +405,8 @@ public:
             query, rerank_k, ef, graph_, qid);
 
         // 2. Re-rank with TRUE cosine distance (CPU, L2-cache friendly)
-#ifdef CPHNSW_USE_OPENMP
-        #pragma omp parallel for if(candidates.size() > 100)
-#endif
+        // NOTE: No OpenMP here - causes nested parallelism thrashing when
+        // called from parallel benchmark loop. Serial AVX is faster for <1000 candidates.
         for (size_t i = 0; i < candidates.size(); ++i) {
             NodeId id = candidates[i].id;
             const Float* node_vec = original_vectors_.data() + id * params_.dim;
@@ -774,10 +774,14 @@ public:
         std::cout << "  Connected: " << connected << "/" << N;
 
         if (connected < N) {
-            std::cout << " (repairing...)" << std::endl;
+            std::cout << " (repairing with distance...)" << std::endl;
 
-            // Repair using RankBasedPruning utility
-            RankBasedPruning::repair_connectivity(neighbor_lists, params_.seed);
+            // Distance-aware repair using k-NN data
+            RankBasedPruning::repair_connectivity_with_distance(
+                neighbor_lists,
+                vectors, N, params_.dim,
+                knn_neighbors.data(), knn_distances.data(), knn_k,
+                params_.seed);
 
             // Re-ingest
             graph_.ingest_knn_graph(codes, neighbor_lists);
@@ -866,12 +870,199 @@ public:
         // Verify and repair connectivity
         size_t connected = verify_connectivity();
         if (connected < N) {
-            RankBasedPruning::repair_connectivity(neighbor_lists, params_.seed);
+            // Distance-aware repair using k-NN data
+            RankBasedPruning::repair_connectivity_with_distance(
+                neighbor_lists,
+                vectors, N, params_.dim,
+                knn_neighbors, knn_distances, k,
+                params_.seed);
             graph_.ingest_knn_graph(codes, neighbor_lists);
         }
 
         std::cout << "Build complete. Connectivity: " << verify_connectivity()
                   << "/" << N << std::endl;
+    }
+
+    // =========================================================================
+    // Serialization API
+    // =========================================================================
+
+    /// Magic number for index format validation
+    static constexpr uint32_t INDEX_MAGIC = 0x43504858;  // "CPHX"
+    static constexpr uint32_t INDEX_VERSION = 1;
+
+    /**
+     * Save index to file.
+     *
+     * Saves:
+     * - Index parameters
+     * - Graph structure (codes + neighbor blocks)
+     * - Original vectors (for reranking)
+     * - Calibration parameters
+     *
+     * @param path  Output file path
+     */
+    void save(const std::string& path) const {
+        std::ofstream ofs(path, std::ios::binary);
+        if (!ofs) {
+            throw std::runtime_error("Cannot open file for writing: " + path);
+        }
+        save(ofs);
+    }
+
+    /**
+     * Save index to binary stream.
+     *
+     * @param os  Output stream (binary mode)
+     */
+    void save(std::ostream& os) const {
+        // Write index header
+        uint32_t magic = INDEX_MAGIC;
+        uint32_t version = INDEX_VERSION;
+        uint64_t seed = params_.seed;
+
+        os.write(reinterpret_cast<const char*>(&magic), sizeof(magic));
+        os.write(reinterpret_cast<const char*>(&version), sizeof(version));
+        os.write(reinterpret_cast<const char*>(&seed), sizeof(seed));
+
+        // Write graph
+        graph_.save(os);
+
+        // Write original vectors
+        uint64_t num_vectors = original_vectors_.size() / params_.dim;
+        os.write(reinterpret_cast<const char*>(&num_vectors), sizeof(num_vectors));
+        if (num_vectors > 0) {
+            os.write(reinterpret_cast<const char*>(original_vectors_.data()),
+                     original_vectors_.size() * sizeof(Float));
+        }
+
+        // Write calibration
+        uint8_t has_calibration = calibration_.is_valid() ? 1 : 0;
+        os.write(reinterpret_cast<const char*>(&has_calibration), sizeof(has_calibration));
+        if (has_calibration) {
+            os.write(reinterpret_cast<const char*>(&calibration_.alpha), sizeof(calibration_.alpha));
+            os.write(reinterpret_cast<const char*>(&calibration_.beta), sizeof(calibration_.beta));
+            os.write(reinterpret_cast<const char*>(&calibration_.r_squared), sizeof(calibration_.r_squared));
+            os.write(reinterpret_cast<const char*>(&calibration_.num_samples), sizeof(calibration_.num_samples));
+        }
+
+        if (!os) {
+            throw std::runtime_error("Failed to write index to stream");
+        }
+    }
+
+    /**
+     * Load index from file.
+     *
+     * @param path  Input file path
+     * @return      Loaded index
+     */
+    static CPHNSWIndex load(const std::string& path) {
+        std::ifstream ifs(path, std::ios::binary);
+        if (!ifs) {
+            throw std::runtime_error("Cannot open file for reading: " + path);
+        }
+        return load(ifs);
+    }
+
+    /**
+     * Load index from binary stream.
+     *
+     * @param is  Input stream (binary mode)
+     * @return    Loaded index
+     */
+    static CPHNSWIndex load(std::istream& is) {
+        // Read and validate header
+        uint32_t magic, version;
+        uint64_t seed;
+
+        is.read(reinterpret_cast<char*>(&magic), sizeof(magic));
+        is.read(reinterpret_cast<char*>(&version), sizeof(version));
+        is.read(reinterpret_cast<char*>(&seed), sizeof(seed));
+
+        if (magic != INDEX_MAGIC) {
+            throw std::runtime_error("Invalid index file: bad magic number");
+        }
+        if (version != INDEX_VERSION) {
+            throw std::runtime_error("Unsupported index version: " + std::to_string(version));
+        }
+
+        // Create temporary index (will be populated from stream)
+        CPHNSWParams params;
+        params.seed = seed;
+        params.k = K;
+        CPHNSWIndex index(params);
+
+        // Load graph
+        index.graph_.load(is);
+
+        // Update params from loaded graph
+        index.params_.dim = index.graph_.params().dim;
+        index.params_.M = index.graph_.params().M;
+        index.params_.k = K;
+        index.params_.seed = seed;
+        index.params_.finalize();
+
+        // Reinitialize encoder with correct dimension
+        index.encoder_ = Encoder(index.params_.dim, seed);
+
+        // Load original vectors
+        uint64_t num_vectors;
+        is.read(reinterpret_cast<char*>(&num_vectors), sizeof(num_vectors));
+        if (num_vectors > 0) {
+            index.original_vectors_.resize(num_vectors * index.params_.dim);
+            is.read(reinterpret_cast<char*>(index.original_vectors_.data()),
+                    index.original_vectors_.size() * sizeof(Float));
+        }
+
+        // Load calibration
+        uint8_t has_calibration;
+        is.read(reinterpret_cast<char*>(&has_calibration), sizeof(has_calibration));
+        if (has_calibration) {
+            is.read(reinterpret_cast<char*>(&index.calibration_.alpha), sizeof(index.calibration_.alpha));
+            is.read(reinterpret_cast<char*>(&index.calibration_.beta), sizeof(index.calibration_.beta));
+            is.read(reinterpret_cast<char*>(&index.calibration_.r_squared), sizeof(index.calibration_.r_squared));
+            is.read(reinterpret_cast<char*>(&index.calibration_.num_samples), sizeof(index.calibration_.num_samples));
+        }
+
+        if (!is) {
+            throw std::runtime_error("Failed to read index from stream");
+        }
+
+        return index;
+    }
+
+    /**
+     * Get estimated file size for saving.
+     *
+     * @return  Estimated size in bytes
+     */
+    size_t estimated_save_size() const {
+        size_t size = 0;
+
+        // Header
+        size += sizeof(uint32_t) * 2 + sizeof(uint64_t);
+
+        // Graph header
+        size += sizeof(uint32_t) * 2 + sizeof(uint64_t) * 4;
+
+        // Codes
+        size += graph_.size() * (sizeof(ComponentT) * K + sizeof(uint8_t) * K);
+
+        // Neighbor blocks (approximate)
+        size += graph_.size() * (sizeof(uint8_t) +
+                                  sizeof(NodeId) * FLASH_MAX_M +
+                                  sizeof(ComponentT) * K * FLASH_MAX_M +
+                                  sizeof(uint8_t) * K * FLASH_MAX_M +
+                                  sizeof(float) * FLASH_MAX_M);
+
+        // Original vectors
+        size += sizeof(uint64_t) + original_vectors_.size() * sizeof(Float);
+
+        // Calibration
+        size += sizeof(uint8_t) + sizeof(float) * 3 + sizeof(size_t);
+
+        return size;
     }
 
 private:

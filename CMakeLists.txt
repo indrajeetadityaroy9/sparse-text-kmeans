@@ -98,6 +98,7 @@ if(CPHNSW_USE_CUDA)
     add_library(cphnsw_cuda STATIC
         src/cuda/gpu_encoder.cu
         src/cuda/gpu_knn_graph.cu
+        src/cuda/gpu_search.cu
     )
     target_include_directories(cphnsw_cuda PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/include
@@ -177,6 +178,10 @@ if(CPHNSW_BUILD_EVAL)
         ${CMAKE_CURRENT_SOURCE_DIR}/include
         ${CMAKE_CURRENT_SOURCE_DIR}/evaluation
     )
+    if(CPHNSW_USE_CUDA)
+        target_link_libraries(eval_master PRIVATE cphnsw_cuda)
+        target_compile_definitions(eval_master PRIVATE CPHNSW_USE_CUDA=1)
+    endif()
 
     # K-specific eval_master variants for Research Evaluation
     foreach(K_VAL 16 32 64)
@@ -189,6 +194,10 @@ if(CPHNSW_BUILD_EVAL)
             ${CMAKE_CURRENT_SOURCE_DIR}/include
             ${CMAKE_CURRENT_SOURCE_DIR}/evaluation
         )
+        if(CPHNSW_USE_CUDA)
+            target_link_libraries(eval_master_k${K_VAL} PRIVATE cphnsw_cuda)
+            target_compile_definitions(eval_master_k${K_VAL} PRIVATE CPHNSW_USE_CUDA=1)
+        endif()
     endforeach()
 
     # QA Protocol test suite
@@ -241,6 +250,29 @@ if(CPHNSW_BUILD_EVAL)
             ${CMAKE_CURRENT_SOURCE_DIR}/include
             ${CMAKE_CURRENT_SOURCE_DIR}/evaluation
         )
+
+        # GPU-accelerated Benchmark (2x H100)
+        add_executable(eval_gpu_benchmark
+            evaluation/eval_gpu_benchmark.cpp
+        )
+        target_link_libraries(eval_gpu_benchmark PRIVATE cphnsw cphnsw_cuda)
+        target_include_directories(eval_gpu_benchmark PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/include
+            ${CMAKE_CURRENT_SOURCE_DIR}/evaluation
+        )
+
+        # K-specific GPU benchmark variants
+        foreach(K_VAL 16 32 64)
+            add_executable(eval_gpu_benchmark_k${K_VAL}
+                evaluation/eval_gpu_benchmark.cpp
+            )
+            target_compile_definitions(eval_gpu_benchmark_k${K_VAL} PRIVATE EVAL_K=${K_VAL})
+            target_link_libraries(eval_gpu_benchmark_k${K_VAL} PRIVATE cphnsw cphnsw_cuda)
+            target_include_directories(eval_gpu_benchmark_k${K_VAL} PRIVATE
+                ${CMAKE_CURRENT_SOURCE_DIR}/include
+                ${CMAKE_CURRENT_SOURCE_DIR}/evaluation
+            )
+        endforeach()
 
         # Code Storage Debug
         add_executable(debug_code_storage

@@ -76,7 +76,7 @@ public:
 
             // Get neighbor block
             const auto& block = graph.get_neighbor_block(c.id);
-            size_t neighbor_count = block.count;
+            size_t neighbor_count = block.count.load(std::memory_order_acquire);
 
             // Prefetch next candidate's block
             if (!C.empty()) {

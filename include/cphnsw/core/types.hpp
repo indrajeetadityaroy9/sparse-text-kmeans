@@ -88,16 +88,13 @@ struct CPCode {
 
     /// Encode index and sign into component
     /// @throws std::overflow_error if index exceeds max_encodable_index()
-    static constexpr ComponentT encode(size_t index, bool is_negative) {
-        // Compile-time check for constexpr contexts, runtime check otherwise
+    static ComponentT encode(size_t index, bool is_negative) {
         if (index > max_encodable_index()) {
-            // In constexpr context, this will cause a compile error
-            // At runtime, we assert and potentially throw
-#ifndef NDEBUG
-            assert(false && "CPCode::encode: index overflow - use larger ComponentT");
-#endif
-            // For release builds, clamp to prevent silent corruption
-            index = max_encodable_index();
+            throw std::overflow_error(
+                "CPCode::encode: index " + std::to_string(index) +
+                " exceeds max " + std::to_string(max_encodable_index()) +
+                " for ComponentT size " + std::to_string(sizeof(ComponentT)) +
+                ". Use uint16_t for dim > 128.");
         }
         return static_cast<ComponentT>((index << 1) | (is_negative ? 1 : 0));
     }

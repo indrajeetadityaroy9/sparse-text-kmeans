@@ -35,7 +35,7 @@ inline double compute_recall(
         }
     }
 
-    return static_cast<double>(hits) / static_cast<double>(gt_set.size());
+    return static_cast<double>(hits) / static_cast<double>(k);
 }
 
 /**

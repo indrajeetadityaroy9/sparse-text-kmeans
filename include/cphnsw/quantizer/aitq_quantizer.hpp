@@ -178,7 +178,8 @@ public:
     }
 
 private:
-    /// Initialize random orthogonal matrix using QR decomposition
+    /// Initialize random orthogonal matrix using Modified Gram-Schmidt with re-orthogonalization
+    /// Uses "twice is enough" principle for numerical stability
     static std::vector<Float> init_random_orthogonal(size_t rows, size_t cols, uint64_t seed) {
         std::mt19937_64 rng(seed);
         std::normal_distribution<Float> dist(0.0f, 1.0f);
@@ -190,31 +191,34 @@ private:
             val = dist(rng);
         }
 
-        // Gram-Schmidt orthogonalization
-        for (size_t i = 0; i < rows; ++i) {
-            Float* row_i = R.data() + i * cols;
+        // Modified Gram-Schmidt with re-orthogonalization (2 passes for stability)
+        for (int pass = 0; pass < 2; ++pass) {
+            for (size_t i = 0; i < rows; ++i) {
+                Float* row_i = R.data() + i * cols;
 
-            // Subtract projections onto previous rows
-            for (size_t j = 0; j < i; ++j) {
-                const Float* row_j = R.data() + j * cols;
-                Float dot = 0.0f;
-                for (size_t k = 0; k < cols; ++k) {
-                    dot += row_i[k] * row_j[k];
+                // Subtract projections onto previous rows (Modified GS: update immediately)
+                for (size_t j = 0; j < i; ++j) {
+                    const Float* row_j = R.data() + j * cols;
+                    Float dot = 0.0f;
+                    for (size_t k = 0; k < cols; ++k) {
+                        dot += row_i[k] * row_j[k];
+                    }
+                    for (size_t k = 0; k < cols; ++k) {
+                        row_i[k] -= dot * row_j[k];
+                    }
                 }
-                for (size_t k = 0; k < cols; ++k) {
-                    row_i[k] -= dot * row_j[k];
-                }
-            }
 
-            // Normalize
-            Float norm = 0.0f;
-            for (size_t k = 0; k < cols; ++k) {
-                norm += row_i[k] * row_i[k];
-            }
-            norm = std::sqrt(norm);
-            if (norm > 1e-10f) {
+                // Normalize
+                Float norm = 0.0f;
                 for (size_t k = 0; k < cols; ++k) {
-                    row_i[k] /= norm;
+                    norm += row_i[k] * row_i[k];
+                }
+                norm = std::sqrt(norm);
+                if (norm > 1e-10f) {
+                    Float inv_norm = 1.0f / norm;
+                    for (size_t k = 0; k < cols; ++k) {
+                        row_i[k] *= inv_norm;
+                    }
                 }
             }
         }

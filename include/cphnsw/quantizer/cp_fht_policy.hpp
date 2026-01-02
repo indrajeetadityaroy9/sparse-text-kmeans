@@ -4,6 +4,7 @@
 #include "quantizer_policy.hpp"
 #include "cp_encoder.hpp"
 #include "../distance/hamming.hpp"
+#include "../graph/flat_graph.hpp"  // For FLASH_MAX_M
 #include <memory>
 
 namespace cphnsw {
@@ -87,8 +88,8 @@ public:
         float* out_distances) const override {
 
         // Cast to the correct transposed layout type
-        const ComponentT (*codes_transposed)[64] =
-            reinterpret_cast<const ComponentT (*)[64]>(codes_transposed_ptr);
+        const ComponentT (*codes_transposed)[FLASH_MAX_M] =
+            reinterpret_cast<const ComponentT (*)[FLASH_MAX_M]>(codes_transposed_ptr);
 
         asymmetric_search_distance_batch_soa<ComponentT, K>(
             query, codes_transposed, num_neighbors, out_distances);

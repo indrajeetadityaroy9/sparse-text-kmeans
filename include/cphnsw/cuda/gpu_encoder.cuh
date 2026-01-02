@@ -4,6 +4,8 @@
 #include <cuda_runtime.h>
 #include <vector>
 #include <memory>
+#include <stdexcept>
+#include <string>
 
 namespace cphnsw {
 namespace cuda {
@@ -155,14 +157,14 @@ private:
     size_t max_queries_;
 };
 
-// CUDA error checking macro
+// CUDA error checking macro - throws exception for RAII cleanup
 #define CUDA_CHECK(call) \
     do { \
         cudaError_t err = call; \
         if (err != cudaSuccess) { \
-            fprintf(stderr, "CUDA error at %s:%d: %s\n", \
-                    __FILE__, __LINE__, cudaGetErrorString(err)); \
-            exit(EXIT_FAILURE); \
+            std::string msg = std::string("CUDA error at ") + __FILE__ + ":" + \
+                std::to_string(__LINE__) + ": " + cudaGetErrorString(err); \
+            throw std::runtime_error(msg); \
         } \
     } while(0)
 

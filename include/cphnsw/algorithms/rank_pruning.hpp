@@ -5,6 +5,9 @@
 #include <vector>
 #include <algorithm>
 #include <cmath>
+#include <unordered_set>
+#include <random>
+#include <limits>
 
 namespace cphnsw {
 
@@ -132,7 +135,7 @@ public:
         std::vector<std::vector<NodeId>> pruned_graph(N);
 
         // Distance computation lambda
-        // Uses 1 - dot for proper metric (compatible with GPU k-NN output)
+        // Uses 1 - dot (positive metric matching GPU k-NN output)
         auto compute_distance = [&](NodeId a, NodeId b) -> float {
             const Float* va = vectors + a * dim;
             const Float* vb = vectors + b * dim;
@@ -140,7 +143,7 @@ public:
             for (size_t d = 0; d < dim; ++d) {
                 dot += va[d] * vb[d];
             }
-            return 1.0f - dot;  // Cosine distance: 1 - similarity
+            return 1.0f - dot;  // Positive metric for pruning
         };
 
         #pragma omp parallel for schedule(dynamic, 100)
@@ -301,6 +304,129 @@ public:
             graph[u].push_back(v);
             graph[v].push_back(u);
         }
+    }
+
+    /**
+     * Distance-aware connectivity repair.
+     *
+     * Uses pre-computed k-NN distances to select the closest neighbor
+     * in the main component, rather than random selection.
+     *
+     * @param graph          Neighbor lists (modified in place)
+     * @param vectors        Original vectors [N x dim]
+     * @param N              Number of vectors
+     * @param dim            Vector dimension
+     * @param knn_neighbors  GPU k-NN neighbors [N x k] (can be nullptr)
+     * @param knn_distances  GPU k-NN distances [N x k] (can be nullptr)
+     * @param knn_k          Number of neighbors per node in k-NN
+     * @param seed           Random seed for fallback
+     */
+    static void repair_connectivity_with_distance(
+        std::vector<std::vector<NodeId>>& graph,
+        const Float* vectors,
+        size_t N,
+        size_t dim,
+        const uint32_t* knn_neighbors,
+        const float* knn_distances,
+        size_t knn_k,
+        uint64_t seed = 42) {
+
+        if (graph.empty()) return;
+
+        size_t n = graph.size();
+        std::vector<bool> visited(n, false);
+        std::vector<NodeId> main_component;
+        main_component.reserve(n);
+
+        // BFS from node 0 to find main component
+        visited[0] = true;
+        main_component.push_back(0);
+        size_t head = 0;
+
+        while (head < main_component.size()) {
+            NodeId u = main_component[head++];
+            for (NodeId v : graph[u]) {
+                if (v < n && !visited[v]) {
+                    visited[v] = true;
+                    main_component.push_back(v);
+                }
+            }
+        }
+
+        if (main_component.size() == n) return;  // Fully connected
+
+        // Build set for O(1) lookup
+        std::unordered_set<NodeId> main_set(main_component.begin(), main_component.end());
+
+        // Find disconnected nodes
+        std::vector<NodeId> disconnected;
+        for (size_t i = 0; i < n; ++i) {
+            if (!visited[i]) {
+                disconnected.push_back(static_cast<NodeId>(i));
+            }
+        }
+
+        // Connect each disconnected node using distance-aware selection
+        for (NodeId u : disconnected) {
+            NodeId best_neighbor = INVALID_NODE;
+            float best_dist = std::numeric_limits<float>::max();
+
+            // Option A: Use GPU k-NN distances if available
+            if (knn_neighbors && knn_distances) {
+                for (size_t i = 0; i < knn_k; ++i) {
+                    NodeId candidate = static_cast<NodeId>(knn_neighbors[u * knn_k + i]);
+                    if (candidate < n && main_set.count(candidate)) {
+                        float dist = knn_distances[u * knn_k + i];
+                        if (dist < best_dist) {
+                            best_dist = dist;
+                            best_neighbor = candidate;
+                        }
+                    }
+                }
+            }
+
+            // Option B: Compute distances if no k-NN match found
+            if (best_neighbor == INVALID_NODE && vectors) {
+                for (NodeId v : main_component) {
+                    float dist = compute_distance_for_repair(vectors, dim, u, v);
+                    if (dist < best_dist) {
+                        best_dist = dist;
+                        best_neighbor = v;
+                    }
+                }
+            }
+
+            // Fallback to random if still no match
+            if (best_neighbor == INVALID_NODE) {
+                std::mt19937_64 rng(seed + u);
+                std::uniform_int_distribution<size_t> dist(0, main_component.size() - 1);
+                best_neighbor = main_component[dist(rng)];
+            }
+
+            // Add bidirectional edge
+            // IMPORTANT: Insert at beginning so ingest_knn_graph (which truncates to M)
+            // will include the repair edge. This prioritizes connectivity over distance-sorted order.
+            graph[u].insert(graph[u].begin(), best_neighbor);
+            graph[best_neighbor].insert(graph[best_neighbor].begin(), u);
+
+            // Add u to main component for subsequent repairs
+            main_set.insert(u);
+            main_component.push_back(u);
+            visited[u] = true;
+        }
+    }
+
+private:
+    /// Compute cosine distance for repair (positive metric)
+    static float compute_distance_for_repair(const Float* vectors, size_t dim,
+                                              NodeId a, NodeId b) {
+        const Float* va = vectors + a * dim;
+        const Float* vb = vectors + b * dim;
+        float dot = 0.0f;
+        for (size_t d = 0; d < dim; ++d) {
+            dot += va[d] * vb[d];
+        }
+        return 1.0f - dot;  // Positive metric matching GPU k-NN
     }
 };
 
