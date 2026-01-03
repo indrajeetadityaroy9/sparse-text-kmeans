@@ -1,0 +1,939 @@
+
+% VLDB template version of 2020-08-03 enhances the ACM template, version 1.7.0:
+% https://www.acm.org/publications/proceedings-template
+% The ACM Latex guide provides further information about the ACM template
+
+\documentclass[sigconf, nonacm]{acmart}
+
+% \usepackage{cite}
+\usepackage{hyperref}
+\usepackage{url}
+\usepackage{bm}
+% \usepackage{amsmath,amssymb,amsfonts}
+\usepackage{amsmath,amsfonts}
+\usepackage{graphicx}
+\usepackage{textcomp}
+\usepackage{xcolor}
+\usepackage{multirow}
+\usepackage{makecell}
+%new add
+\usepackage{subfigure}
+\usepackage{color}
+\usepackage{caption}
+\usepackage{braket}
+% \usepackage[perpage, symbol*, bottom]{footmisc}
+% \renewcommand{\footnoterule}{\vspace*{-3pt} \noindent\rule[0.5ex]{\linewidth}{0.3pt}\vspace*{2.6pt}}
+\def\tablename{Table}
+\renewcommand{\thetable}{\arabic{table}}
+\captionsetup[figure]{labelfont={bf},name=Figure}
+\captionsetup[table]{labelfont={bf},name=Table}
+\usepackage[linesnumbered,ruled]{algorithm2e}
+\newtheorem{myExample}{Example}
+\newtheorem{myDef}{Definition}
+\newtheorem{myTheorem}{Theorem}
+\newtheorem{myLemma}{Lemma}
+% \renewcommand{\IEEEQED}{\IEEEQEDopen}
+\def\IEEEproofindentspace{2\parindent}
+\renewcommand{\IEEEproofindentspace}{10pt}
+
+%
+\usepackage[utf8]{inputenc}
+\usepackage{cleveref}
+\crefname{section}{§}{§§}
+\Crefname{section}{§}{§§}
+%
+\def\BibTeX{{\rm B\kern-.05em{\sc i\kern-.025em b}\kern-.08em
+    T\kern-.1667em\lower.7ex\hbox{E}\kern-.125emX}}
+
+%% The following content must be adapted for the final version
+% paper-specific
+\newcommand\vldbdoi{XX.XX/XXX.XX}
+\newcommand\vldbpages{XXX-XXX}
+% issue-specific
+\newcommand\vldbvolume{17}
+\newcommand\vldbissue{1}
+\newcommand\vldbyear{2024}
+% should be fine as it is
+\newcommand\vldbauthors{\authors}
+\newcommand\vldbtitle{\shorttitle} 
+% leave empty if no availability url should be set
+\newcommand\vldbavailabilityurl{URL_TO_YOUR_ARTIFACTS}
+% whether page numbers should be shown or not, use 'plain' for review versions, 'empty' for camera ready
+\newcommand\vldbpagestyle{plain} 
+
+\begin{document}
+\title{Routing-Guided Learned Product Quantization for Graph-Based Approximate Nearest Neighbor Search}
+
+\author{Qiang Yue$^1$, Xiaoliang Xu$^1$, Yuxiang Wang$^1$, Yikun Tao$^1$, Xuliyuan Luo$^1$}
+\affiliation{$^1$\institution{Hangzhou Dianzi University, China}}
+\email{{yq,xxl,lsswyx,tyk,xuliyuanluo}@hdu.edu.cn}
+
+\begin{abstract}
+Given a vector dataset $\mathcal{X}$, a query vector $\vec{x}_q$, graph-based Approximate Nearest Neighbor Search (ANNS) aims to build a proximity graph (PG) as an index of $\mathcal{X}$ and approximately return vectors with minimum distances to $\vec{x}_q$ by searching over the PG index. It suffers from the large-scale $\mathcal{X}$ because a PG with full vectors is too large to fit into the memory, e.g., a billion-scale $\mathcal{X}$ in 128 dimensions would consume nearly 600 GB memory. To solve this, Product Quantization (PQ) integrated graph-based ANNS is proposed to reduce the memory usage, using smaller compact codes of quantized vectors in memory instead of the large original vectors. Existing PQ methods do not consider the important routing features of PG, resulting in low-quality quantized vectors that affect the ANNS's effectiveness. In this paper, we present an end-to-end Routing-guided learned Product Quantization (RPQ) for graph-based ANNS. It consists of (1) a \textit{differentiable quantizer} used to make the standard discrete PQ differentiable to suit for back-propagation of end-to-end learning, (2) a \textit{sampling-based feature extractor} used to extract neighborhood and routing features of a PG, and (3) a \textit{multi-feature joint training module} with two types of feature-aware losses to continuously optimize the differentiable quantizer. As a result, the inherent features of a PG would be embedded into the learned PQ, generating high-quality quantized vectors. Moreover, we integrate our RPQ with the state-of-the-art DiskANN and existing popular PGs to improve their performance. Comprehensive experiments on real-world large-scale datasets (from 1M to 1B) demonstrate RPQ's superiority, e.g., 1.7$\times$-4.2$\times$ improvement on QPS at the same recall@10 of 95\%.
+\end{abstract}
+%It has been widely recognized that graph-based ANNS is effective and efficient, however
+% which easily can be adaptive to existing popular PGs that facilitate the search's performance.
+%  replacing a large PG with original vectors by the one with smaller compact codes of quantized vectors
+\maketitle
+
+%%% do not modify the following VLDB block %%
+%%% VLDB block start %%%
+\pagestyle{\vldbpagestyle}
+\begingroup\small\noindent\raggedright\textbf{PVLDB Reference Format:}\\
+\vldbauthors. \vldbtitle. PVLDB, \vldbvolume(\vldbissue): \vldbpages, \vldbyear.\\
+\href{https://doi.org/\vldbdoi}{doi:\vldbdoi}
+\endgroup
+\begingroup
+\renewcommand\thefootnote{}\footnote{\noindent
+This work is licensed under the Creative Commons BY-NC-ND 4.0 International License. Visit \url{https://creativecommons.org/licenses/by-nc-nd/4.0/} to view a copy of this license. For any use beyond those covered by this license, obtain permission by emailing \href{mailto:info@vldb.org}{info@vldb.org}. Copyright is held by the owner/author(s). Publication rights licensed to the VLDB Endowment. \\
+\raggedright Proceedings of the VLDB Endowment, Vol. \vldbvolume, No. \vldbissue\ %
+ISSN 2150-8097. \\
+\href{https://doi.org/\vldbdoi}{doi:\vldbdoi} \\
+}\addtocounter{footnote}{-1}\endgroup
+%%% VLDB block end %%%
+
+%%% do not modify the following VLDB block %%
+%%% VLDB block start %%%
+\ifdefempty{\vldbavailabilityurl}{}{
+\vspace{.3cm}
+\begingroup\small\noindent\raggedright\textbf{PVLDB Artifact Availability:}\\
+The source code, data, and/or other artifacts have been made available at \url{\vldbavailabilityurl}.
+\endgroup
+}
+%%% VLDB block end %%%
+
+\section{Introduction}
+\label{sec:intro}
+\textit{Approximate Nearest Neighbor Search} (ANNS) ~\cite{arya1993approximate, indyk1998approximate, arya1998optimal} is a fundamental problem in many real-world applications, including recommendation systems ~\cite{wang2022fast, sarwar2001item, meng2020pmd, sarwar2001item}, information retrieval ~\cite{xu2022academic, flickner1995query, zhu2019accelerating}, data mining \cite{adeniyi2016automated, bijalwan2014knn, huang2017query}, and pattern recognition\cite{cover1967nearest, zhu2019accelerating, kosuge2019object, torralba2008small}. Given a vector dataset $\mathcal{X}$ and a query vector $\vec{x}_q$, ANNS efficiently and effectively returns relevant results to $\vec{x}_q$ from $\mathcal{X}$ with minimum distance. With the emergence of neural embedding \cite{amvrosiadis2019data, datta2008image, wang2015learning}, sparse discrete data (e.g., documents) can be transformed into dense continuous vectors. This renders ANNS an increasingly important problem, especially for information retrieval over large-scale vectorized datasets. Additionally, with the emergence and growing popularity of \textit{Large Language Models} (LLMs), ANNS is often applied to retrieve relevant information from external database for prompting LLMs \cite{dobson2023scaling}, consequently enhancing LLMs' reliability.
+
+Among various types of ANNS methods, the graph-based ANNS is now a mainstream solution \cite{malkov2018efficient, chen2021spann, fu2017fast, liu2022optimizing}, with a vast amount of theoretical and empirical literature \cite{aumuller2020ann, Wang2021, shimomura2021survey} has proven their potential. Graph-based ANNS generally involves two phases: preprocessing phase and query processing phase. In the preprocessing phase, a \textit{Proximity Graph} (PG, we formally define it in \S \ref{sec:preliminaries}) is constructed as an index based on the vector dataset $\mathcal{X}$, each vertex in a PG corresponds a vector in $\mathcal{X}$, and an edge between two vertices denotes a neighbor relationship. During the query processing phase, a routing process is conducted over a PG. It starts from an entry vertex and iteratively exploring the PG along the vertices that can guide the search closer to the query $\vec{x}_q$ until it converges \cite{baranchuk2019learning}. With the excellent routing navigation ability of a PG, graph-based ANNS can quickly locate the neighbors that are close to optimal, which translates to a better trade-off between recall and latency \cite{aoyama2013graph, aumuller2020ann, hacid2010neighborhood}.
+
+\begin{figure*}
+\vspace{-0.1cm}
+\centering
+\includegraphics[width=0.92\linewidth]{pic/fig1.pdf}
+\vspace{-0.2cm}
+\caption{\textbf{Overview of PQ methods for graph-based ANNS. (a) Vertex-oriented PQ and (b) Neighborhood-oriented PQ.}}\label{fig:1}
+\vspace{-0.5cm}
+\end{figure*}
+
+Although graph-based ANNS methods have been widely studied and achieve excellent performance, they face limitations when dealing with large-scale (million or even billion scale) vector datasets, which are commonly encountered in real-world scenarios \cite{arora2018hd, douze2018link}. This is because graph-based ANNS methods assume that a PG fits in the memory, which leads to a extreme large memory footprint. For example, using a graph-based ANNS method for a billion floating-point vectors in 128 dimensions would consume nearly 600 GB memory, far exceeding the RAM capacity of a workstation.
+
+Various algorithms \cite{jayaram2019diskann, zhang2019grip, douze2018link, singh2021freshdiskann} have been proposed to combine with \textit{Product Quantization} (PQ) \cite{jegou2010product}, in order to augment graph-based ANNS for large-scale datasets. Specifically, taking DiskANN \cite{jayaram2019diskann} as an example, vectors are compressed by PQ, only the compact codes and codebook are cached in main memory for pre-computation, while the PG and original vectors are stored in external memory for post-verification. The quantization quality will significantly affect ANNS's effectiveness, e.g., reducing the memory overhead by 16$\times$ can result in a 25\% decrease in recall. This can be explained that quantization process does not carry the inherent features of a PG. \textit{This motivates us to explore a well-designed PQ that is tailored for PG, thus improving the graph-based ANNS's effectiveness as well as conserving memory usage}. 
+
+\vspace{0.1cm}
+\noindent\textbf{Existing PQ methods.} We generally categorize existing PQ methods into the following two categories.
+
+\vspace{0.1cm}
+\noindent\underline{Vertex-oriented PQ \cite{jayaram2019diskann, zhang2019grip, jegou2010product, ge2013optimized, norouzi2013cartesian}}. This line of work aims to minimize the distortions between the original vectors and the quantized vectors. Figure \ref{fig:1} (a) illustrates an example. A vector dataset $\mathcal{X}$ is given in the Euclidean space $\mathcal{E}^D$, where each vector $\vec{x}_i \in \mathcal{X}$ has $D$ dimensions ($D=16$ in Figure \ref{fig:1} (a)). To quantize each vector as a compact code, a quantizer $\mathcal{Q}$ is established based on $\mathcal{X}$ as follows: (1) $\mathcal{X}$ is divided into $M$ ($M=2$ in Figure \ref{fig:1}) non-overlapping chunks $\mathcal{X}=\{\mathcal{X}^1,\dots, \mathcal{X}^M\}$, where $\mathcal{X}^j$ is the $j$-th chunk of $\mathcal{X}$, and the sub-vector of vector $\vec{x}_i$ within $\mathcal{X}^j$ is denoted as $\vec{x}^{j}_i$; (2) A clustering algorithm (e.g. $k$-means) is applied to each chunk to generate $K$ ($K=8$ in Figure \ref{fig:1}) clusters. The centroid of each cluster in $\mathcal{X}^j$ is denoted as a codeword $\vec{c}^{\, j}_k$, where $k=\{0,\dots,K-1\}$ is the identifier of the codeword. The $K$ codewords of each chunk $\mathcal{X}^j$ form the sub-codebook $\mathcal{C}^j=\{\vec{c}_{0}^{\,j},\dots, \vec{c}_{K-1}^{\,j}\}$. The codebook of $\mathcal{X}$ is defined as the Cartesian product of sub-codebooks, denoted as $\mathcal{C} = \mathcal{C}^1 \times \dots \times \mathcal{C}^M$; (3) The Lloyd \cite{1056489, jegou2010product} quantizer $\mathcal{Q}$ is often established to encode vector $\vec{x}_i$ as a compact code $\mathcal{Q}(\vec{x}_i)$. Specifically, $\mathcal{Q}$ finds the closest codeword w.r.t. each sub-vector $\vec{x}^j_i$ in $\mathcal{X}^j$ and quantizes $\vec{x}_i$ using the identifiers of $M$ closest codewords as its compact code $\mathcal{Q}(\vec{x}_i)$. For example, consider the input vector $\vec{x}_1$, which is divided into two sub-vectors $\{\vec{x}^1_1,\vec{x}^2_1\}$. Suppose that $\vec{x}^1_1$ is close to the fourth codeword $\vec{c}_3^{\,1}$ in $\mathcal{X}^1$ and $\vec{x}^2_1$ is close to $\vec{c}_2^{\,2}$ in $\mathcal{X}^2$, then we have the compact code $\mathcal{Q}(\vec{x}_1)=\{3,2\}$. Since a codeword can be identified by an integer using $\log_2K$ bits, in this example, each compact code only requires $M\log_2K=6$ bits for storage, which is much less than that of original vector, i.e., $D * \text{sizeof(float)} = 64$ bytes. It is clear to observe that using the compact code $\mathcal{Q}(\mathcal{X})$ would significantly reduce the memory overhead of maintaining full vectors.
+
+In querying phase, given a query vector $\vec{x}_q$, it is initially vertically divided into $M$ sub-vectors $\vec{x}_q=\{\vec{x}_q^1,\dots, \vec{x}_q^M\}$. Next, a lookup table is pre-computed to cache the distances between each $\vec{x}_q^j$ and every codeword $\vec{c}^{\,j}_{k}$ in the sub-codebook $\mathcal{C}^j$. In this way, the distance between $\vec{x}_q$ and any $\vec{x}_i\in \mathcal{X}$ can be estimated by the one between $\vec{x}_q$ and $\mathcal{Q}({\vec{x}_i})$. Given a lookup table (a), assume that we want to estimate the distance between $\vec{x}_q$ and $\vec{x}_3$, we only require to retrieve the entries from lookup table (a) using the compact code $\mathcal{Q}(\vec{x}_3)=\{0,4\}$, i.e., the distances of $\vec{x}_q^{\,1}$ and $\vec{x}_q^{\,2}$ to $\vec{c}^{\,1}_0$ and $\vec{c}^{\,2}_4$ that are 3.61 and 0.36, and then estimate the distance as 3.61+0.36.
+
+Since vertex-oriented PQ does not consider the neighborhood relationships between nodes in a PG, it suffers from the inaccurate ANNS results. In Figure \ref{fig:1}, following the blue routing path we reach to $\vec{x}_6$ and consider its neighbors $\vec{x}_3$ and $\vec{x}_4$ as candidates for next-hop selection. Note that, in the neighborhood of $\vec{x}_q$ (dotted circle), $\vec{x}_3$ is closer to the query $\vec{x}_q$ than $\vec{x}_4$. However, using the lookup table (a) would mistakenly select $\vec{x}_4$ as next-hop as it's quantized vector is closer to $\vec{x}_q$ (i.e., 0.64+0.36$<$3.61+0.36). Thus, the ranking of candidates for next-hop selection becomes distorted, leading to the failure of PG routing to converge. \textit{This example demonstrates that maintaining neighborhood relationships of a PG is essential for establishing a good quantizer $Q$ for graph-based ANNS}.
+
+\vspace{0.1cm}
+\noindent\underline{Neighborhood-oriented PQ \cite{zhang2022connecting, karaman2019unsupervised, sablayrolles2018spreading, prokhorenkova2020graph}} This line of work incorporates neighborhood relationships into its approach following two steps as shown in Figure \ref{fig:1} (b). First, it learns the approximate vectors $\mathcal{Y}$ for original vectors in $\mathcal{X}$, ensuring that vertices in the same neighborhood are more similar in $\mathcal{Y}$ than others. Second, it compresses $\mathcal{Y}$ into compact codes $\mathcal{Q}(\mathcal{Y})$ by the same produce as vertex-oriented PQ. It still faces limitations when candidates do not belong to the neighborhood of $\vec{x}_q$. Considering $\vec{y}_5$ in the green routing path, its two neighbors $\vec{y}_1$, $\vec{y}_2$ are out of $\vec{x}_q$'s neighborhood. Using the lookup table (b) would mistakenly select $\vec{y}_2$ as next-hop because 4.00+0.49$<$4.00+2.25, leading to a final result as $\vec{y}_3$ not the optimal $\vec{y}_7$. \textit{This example demonstrates that, besides preserving the neighborhood relationships in $\mathcal{Q}$, maintaining the important routing features (i.e., correct next-hop selection during the routing procedure)} is also essential for graph-based ANNS. If we do so, the PQ with routing features would correctly select $\vec{y}_1$ to guide a search located in $\vec{x}_q$'s neighborhood and find the optimal results.
+%Although it can distinguish that $\vec{x}_3$ is closer to $\vec{x}_q$ than $\vec{x}_4$,
+
+\vspace{0.1cm}
+\noindent \textbf{Challenges and our solutions.} Different from the aforementioned methods, we expect to establish a quantizer $\mathcal{Q}$ considering the features from both the neighborhood relationship in a PG and the routing process performed over a PG. Intuitively, one can come up with a straightforward method following the same two-step process as the typical neighborhood-oriented PQ \cite{prokhorenkova2020graph, sablayrolles2018spreading, zhang2022connecting}: It first embeds two types of features into an intermediate approximate vectors $\mathcal{Y}$, then it compresses $\mathcal{Y}$ into compact codes $\mathcal{Q}(\mathcal{Y})$ using existing PQ methods. Since the PQ procedure is not contained in the learning model of transforming $\mathcal{X}$ to $\mathcal{Y}$, the embedded features in the first step would be largely lost in the second step. More precisely, a two-step process would destroy the well-trained embeddings to some extent. This motivates us to study a one-segment end-to-end \textbf{R}outing-guided \textbf{P}roduct \textbf{Q}uantization (RPQ) for graph-based ANNS, which is non-trivial because of the following challenges.
+%Consequently, it is crucial to develop a one-segment quantizer instead of a two-step one. 
+
+%In \textbf{\S \ref{sec:model}}, we present a differentiable quantizer with two major steps: (1) Adaptive vector decomposition based on space rotation using a square orthonormal matrix. In this way, we can automatically assign dimensions to each sub-vectors so that each sub-vector would be equalized valuable for the following quantization step; (2) Differentiable quantization for above balanced sub-vectors, based on a differentiable approximation with codeword assignment probability and Gumbel-Softmax. In this way, we can generate approximate compact code in a continuous space instead of a discrete space, thus making the back-propagation possible. As a result, a PG's inherent features would be retained lossless in the learned PQ.
+
+\vspace{0.1cm}
+\noindent\underline{Challenge I:} \textit{How to make a discrete quantization process differentiable, enabling back-propagation for end-to-end learning of RPQ?} Since PQ requires vertically dividing each vector $\vec{x}_i\in \mathcal{X}$ into $M$ sub-vectors, the dimensions with valuable intrinsic features would unbalancedly locate among $M$ sub-vectors, resulting in meaningless quantized sub-vectors from those sub-vectors with less intrinsic features \cite{li2019approximate, amsaleg2015estimating, he2012difficulty}. Unfortunately, we cannot utilize a back-propagation to automatically optimize the dimensions' distribution in sub-vectors because the vertical division is non-differentiable. Besides, PQ assigns an identifier of the closest codeword to each sub-vector as its compact code, this is a non-differentiable \textit{argmin} operation. We cannot utilize back-propagation to optimize the compact code generation. In a nutshell, the key of end-to-end RPQ is to convert a non-differentiable quantization into a differentiable one, so that we can optimize a learned quantizer $\mathcal{Q}$ via back-propagation.
+
+To handle this, in \textbf{\S \ref{sec:model}}, we present a differentiable quantizer $\mathcal{Q}$ with two major steps: (1) \textit{Adaptive vector decomposition} based on space rotation using a square orthonormal matrix. Since the space rotation is a differentiable vector operation, we can use back-propagation to update the square orthonormal matrix so as to refine the dimensions' districution among all sub-vectors, i.e., changing the vertical division to an automatic vector decomposition. (2) \textit{Differentiable quantization} based on an approximate codeword assignment probability calculated by the differentiable Gumbel-Softmax. In this step, we obtain an approximate compact code in a continuous space instead of a discrete space, making the back-propagation possible. As a result, the entire PQ procedure can be continuously updated via learning with back-propagation and a PG's inherent features would be retained lossless in the learned PQ.
+
+\vspace{0.1cm}
+\noindent\underline{Challenge II:} \textit{How to effectively extract a PG's neighborhood and routing features that are beneficial to the learning of RPQ?} A good quantizer should be able to make the quantized vectors of two vertices in a PG reflect their original neighborhood relationship. If two vertices are close in a PG, then their quantized vectors should be close too. The difficulty is how to define positive/negative samples w.r.t. neighborhood relationship and control their proportion to deal with the hard sample issue (i.e., distinguish two vertices with close distance but not neighborly) \cite{Cohan2020}. For routing features, a simple method is to use the optimal routing paths of training queries to predict routing paths for testing queries. However, it is problematic because in real-applications, queries are dynamically changing so that the optimal routing path of one already seen query is different from other unseen queries. Therefore, comparing with learning entire routing paths, it is more valuable to learn the decision making process (i.e., next-hop selection) of graph-based ANNS.
+
+%we argue that learning the decision making process is more valuable for graph-based ANNS.
+%A possible approach is to follow the idea of comparative learning to collect positive and negative samples w.r.t. neighborhood relationship, but the difficulty is \textit{how to define positive/negative samples and control their proportion to deal with the hard sample issue (i.e., distinguish two vertices with close distance but not neighborly) \cite{Cohan2020}}.
+%we employ the idea of contrastive learning to collect positive/negative samples w.r.t. neighborhood relationship. To achieve this, we introduce two parameters $k_{\rm pos}$ and $k_{\rm neg}$ to define positive and negative samples of a vertex $v$ as its top-$k_{\rm pos}$ nearest vertices from the $n$-hop neighborhood of $v$ (in a PG), denoted by $N_n(v)$, and the top-$k_{\rm neg}$ vertices from the remained $N_n(v)-k_{\rm pos}$ vertices. In this way, we can flexibly control the proportion of positive and negative samples and the scope of hard samples by adjusting two parameters.
+
+In \textbf{\S \ref{sec:loss}}, {we employ the idea of contrastive learning to collect positive and negative samples of a vertex $v$ in a PG as its top-$k_{\rm pos}$ nearest vertices from the $n$-hop neighborhood of $v$, denoted by $N_n(v)$, and the top-$k_{\rm neg}$ vertices from the remained $N_n(v)-k_{\rm pos}$ vertices, respectively. We can flexibly control the proportion of positive and negative samples and the scope of hard samples by adjusting two parameters $k_{\rm pos}$ and $k_{\rm neg}$. For routing features, we randomly select a set of queries and perform graph-based ANNS using the learned quantizer $\mathcal{Q}$. Then, we record all the ranked candidates used for next-hop selection in the entire routing path as routing features. We expect to learn how to select the correct next-hop from the ranked candidates, thus optimizing the learned $\mathcal{Q}$.
+
+%by continuously optimize the learned $\mathcal{Q}$
+
+
+\vspace{0.1cm}
+\noindent\underline{Challenge III:} \textit{How to design an appropriate loss function to optimize the learned quantizer $\mathcal{Q}$ via back-propagation?} Since we have two different features considered to optimize the learned quantizer $\mathcal{Q}$, it is reasonable to design a dedicated loss function for each of them to optimize $\mathcal{Q}$ separately. However, this does not necessarily ensure the consistency of the gradient direction of two losses (i.e., the optimization direction may deviate). This implies us to integrate both losses to optimize $\mathcal{Q}$ along a unified gradient direction.
+
+In \textbf{\S \ref{sec:training}}, we first present a neighborhood feature-aware loss to preserve the neighborhood relationships in the quantized vector space as that exists in the original vector space. Next, we propose a routing feature-aware loss to measure how good a decision made based on learned $\mathcal{Q}$, and minimize it to optimize $\mathcal{Q}$. Finally, we apply a multi-feature joint loss of the above two losses to optimize $\mathcal{Q}$ using mini-batch gradient, so as to unify the optimization direction.
+
+\vspace{0.1cm}
+\noindent \textbf{Contributions.} Our contributions are summarized as follows:
+\begin{itemize}
+    \item We introduce an end-to-end RPQ framework in \S \ref{sec:roq}, which is designed to be adaptive to existing popular PGs and facilitate PQ-integrated graph-based ANNS.
+    \item We propose a differentiable quantizer in \S \ref{sec:model} to enable the back-propagation for end-to-end learning of RPQ.
+    \item We present a sampling-based method to extract a PG's inherent features (\S \ref{sec:loss}), including the important neighborhood relationship features and routing features. 
+    \item In \S \ref{sec:training}, we present a multi-feature joint training with two feature-aware losses to optimize the differentiable quantizer.
+    \item Extensive experiments on real-world datasets (\S \ref{sec:experiments}) demonstrate the effectiveness and efficiency of RPQ.
+\end{itemize}
+
+%using the above two types of features.
+%We propose a differentiable quantizer in \S \ref{sec:model} with two steps of adaptive vector decomposition and differentiable quantization, which enables the back-propagation of end-to-end learning of RPQ.
+%In \S \ref{sec:loss}, we present a sampling-based method to extract a PG's inherent features, including the important routing features as well as the neighborhood features. A multi-joint training with two feature-aware losses are conducted to optimize the differentiable quantizer.
+
+
+\vspace{-0.25cm}
+\section{PRELIMINARIES AND PROBLEMS} \label{sec:preliminaries}
+
+We show preliminaries in \S \ref{sec:pre} and define the problem in \S \ref{sec:problem}. Frequently used notations are provided in Table \ref{tab:freq}.
+
+\setlength{\textfloatsep}{0.2cm}
+\begin{table}
+  \setlength{\abovecaptionskip}{0.1cm}
+  %\captionsetup{labelfont=bf}
+  \caption{Frequently used notations}
+  \label{tab:freq}
+  \renewcommand\arraystretch{0.92}
+  \begin{tabular}{c|l}
+    \hline
+    \small{\textbf{Notations}}       &  \small{\textbf{Descriptions}}      \\
+    \hline
+    \hline
+    \thead[c]{$\mathcal{X}$}            & \thead[l]{A limited dataset, where every element is a vector $\vec{x}_i$.} \\
+    \hline
+    \thead[c]{$\mathcal{X}^j$}          & \thead[l]{The $j$-th chunk of the dataset $\mathcal{X}$.} \\
+    \hline
+    \thead[c]{$\vec{x}_q$}              & \thead[l]{The query vector.} \\
+    \hline
+    \thead[c]{$\mathcal{C}$}            & \thead[l]{The codebook which is composed by sub-codebooks $\mathcal{C}^j$.} \\
+    \hline
+    \thead[c]{$\vec{c}_{k}^{\,j}$}      & \thead[l]{The $k$-th codeword of sub-codebook $\mathcal{C}^j$.} \\
+    \hline
+    \thead[c]{$\mathcal{Q}$}            & \thead[l]{A quantizer maps a vector $\vec{x}_i$ to a compact code $\mathcal{Q}(\vec{x}_i)$.} \\
+    \hline
+    \thead[c]{$\vec{x}_i'$}             & \thead[l]{A quantized vector of $\vec{x}_i$, which consists of codewords \\corresponding to $\mathcal{Q}(\vec{x}_i)$.} \\
+    \hline
+    \thead[c]{$\delta(\cdot, \cdot)$}								& {\thead[l]{The squared Euclidean distance \cite{jegou2010product} between \\two vectors.}} \\
+    \hline
+    \thead[c]{$G(V,E)$}                 & \thead[l]{A PG $G$ consists of vertices $V$ and edges $E$.} \\
+    \hline
+    %$v_i$                    & \textcolor{blue}{\thead[l]{The i-th vertex of vertices $V$. In PQ-integrated graph-based \\ANNS, each vertex represents a vector $\vec{x}_{v_i}$, a compact \\code $\mathcal{Q}(\vec{x}_{v_i})$ and a quantized vector $\vec{x}_{v_i}'$.} } \\
+   % \hline
+    \thead[c]{$N(v)$}                   & \thead[l]{The neighbors of vertex $v$ in $G$.} \\   
+    \hline
+\end{tabular}
+\end{table}
+
+%\textcolor{blue}{Unless otherwise specified, when referring to the PG's structure without the corresponding data, $v_i$ is used to describe. However, when discussing specific data types (e.g., $\vec{x}_i$, $\mathcal{Q}(\vec{x}_i)$ and $\vec{x}_i$), use the corresponding notation.}
+
+\vspace{-0.15cm}
+\subsection{Preliminaries}
+\label{sec:pre}
+\begin{myDef}
+\label{def:anns}
+\textbf{Approximate Nearest Neighbor Search (ANNS)} \cite{arya1993approximate, indyk1998approximate}. Given a vector dataset $\mathcal{X}$ of $n$ vectors, a query vector $\vec{x}_q$, and a parameter $\epsilon>0$. ANNS aims at effectively obtaining a vector $\vec{x}_p \in \mathcal{X}$ that is close to $\vec{x}_q$, satisfying the condition:
+$\delta(\vec{x}_p,\vec{x}_q) \leq (1+\epsilon) \delta(\vec{x}_r, \vec{x}_q)$, where $\vec{x}_r$ is the nearest vector to $\vec{x}_q$ in $\mathcal{X}$.
+\end{myDef}
+
+\vspace{-0.1cm}
+This problem can easily generalize to the case where we aim to return $k>1$ closest vectors to $\vec{x}_q$. In practice, we use \emph{recall@$k$} instead of the predefined $\epsilon$ to evaluate the accuracy. Given a $\vec{x}_q$, we use $\mathcal{R}$ to record $k$ vectors obtained by ANNS, and we use $\widetilde{\mathcal{R}}$ to record $k$ nearest vectors of $\vec{x}_q$. Then we define \emph{recall@$k$} as follows.
+\begin{equation}
+\label{eq:recall}
+    Recall@k=\frac{|\mathcal{R} \cap \widetilde{\mathcal{R}}|}{|\widetilde{\mathcal{R}}|}=\frac{|\mathcal{R} \cap \widetilde{\mathcal{R}}|}{k}
+\end{equation}
+
+%The key of graph-based ANNS is the Proximity Graph (PG) that is defined below.
+%Graph-based ANNS has gained prominence due to advantageous trade-off between accuracy and efficiency. It usually relay on the Proximity Graph (PG) defined as follows.
+
+\begin{myDef}
+\label{def:pg}
+\textbf{Proximity Graph (PG) \cite{Wang2022NHQ,Wang2024}.} Given a vector dataset $\mathcal{X}$ and a non-negative distance threshold $\Theta$, we define the PG of $\mathcal{X}$ w.r.t. $\Theta$ as a graph $G = (V, E)$ with the vertex set $V$ and edge set $E$. (1) For each vector $\vec{x}_i\in \mathcal{X}$, it has a corresponding vertex $v_i\in V$. (2) For any two vertices $v_i$, $v_j\in V$, if $v_iv_j\in E$, we have $\delta(\vec{x}_{i}, \vec{x}_{j}) \leq \Theta$.
+\end{myDef}
+
+\vspace{0.1cm}
+
+Similar to \cite{jegou2010product, faissweb, ge2013optimized}, we adopt the squared Euclidean distance between two vectors as $\delta(\cdot,\cdot)$, because it avoids square root operation so that it is more efficient than Euclidean distance. Graph-based ANNS assumes that both the PG and $\mathcal{X}$ would fit in main memory, resulting in a large memory footprint. One crucial optimization is using Product Quantization (PQ) to cut down the size of vectors. %We define PQ as below.
+
+\vspace{0.1cm}
+
+\begin{myDef}
+\label{def:pq}
+\textbf{Product Quantization (PQ).} Given a vector dataset $\mathcal{X}$ in $D$-dimensional space $\mathcal{E}^D$, and non-negative integers $M$ and $K$. PQ utilizes a quantizer $\mathcal{Q}$ to map a vector $\vec{x}_i \in \mathcal{X}$ to a compact code $\mathcal{Q}(\vec{x}_i)=\{\mathcal{Q}^1(\vec{x}_{i}^1),\dots,\mathcal{Q}^M(\vec{x}_{i}^M)\}$. (1) Each $\vec{x}_i^{\, j} \in \mathcal{E}^{D/M}$ is a sub-vector of the original $\vec{x}_i$. (2) Each sub-quantizer $\mathcal{Q}^j$ maps a sub-vector $\vec{x}_i^{\, j}$ to an identifier of a codeword $\vec{c}_k^{\,j}$ in sub-codebook $\mathcal{C}^j$. The mapping between sub-vector $\vec{x}_i^j$ and the codeword $\vec{c}_k^{\,j}$ is denoted as $\vec{c}_k^{\,j}=\mathcal{C}^j(\mathcal{Q}^j(\vec{x}_i^j))$. (3) Each sub-codebook $\mathcal{C}^j=\{\vec{c}_1^{\,j},\dots,\vec{c}_K^{\,j}\}$ is a set of $K$ codewords, and the codebook $\mathcal{C}$ is defined as the Cartesian product of sub-codebooks, i.e., $\mathcal{C} = \mathcal{C}^1 \times \dots \times \mathcal{C}^M$. Therefore, original vector $\vec{x}_i$ can be approximated by quantized vector $\vec{x}_i'=\mathcal{C}(\mathcal{Q}(\vec{x}_i))$.
+\end{myDef}
+
+\vspace{0.1cm}
+ Given a vector dataset $\mathcal{X}$ and a vertex set $V$ of a PG, there is a bijection: $\mathcal{X}\rightarrow V$, that is, every vertex $v_i\in V$ is the image of exactly one vector $\vec{x}_i\in \mathcal{X}$. It's worth mentioning that when we need to emphasize the bijection between $\mathcal{X}$ and $V$, we will use $\vec{x}_{v_i}$ to clearly represent the corresponding vector of vertex $v_i$.
+
+%(3) When we mention the vector distance $\delta(\cdot,\cdot)$ in the rest of this paper, it refers to the squared Euclidean distance calculated using the original vectors or quantized vectors (discussed later in \S \ref{sec:intuition}).}
+%\noindent\textcolor{blue}{\textbf{Remarks.} (1) Given a vector dataset $\mathcal{X}$ and a vertex set $V$ of a PG, there is a bijection: $\mathcal{X}\rightarrow V$, that is, every vertex $v_i\in V$ is the image of exactly one vector $\vec{x}_i\in \mathcal{X}$. (2) Each vector $\vec{x}_i$ has a quantized vector $\vec{x}_i'$ using a quantizer $\mathcal{Q}$.}
+%(3) When we mention the vector distance $\delta(\cdot,\cdot)$ in the rest of this paper, it refers to the squared Euclidean distance calculated using the original vectors or quantized vectors (discussed later in \S \ref{sec:intuition}).}
+
+\subsection{Problem Definition}
+\label{sec:problem}
+Given the aforementioned definitions, we study the problem of designing a tailored PQ for effective graph-based ANNS.%, which defined below.
+
+%we address critical shortcomings of current methods are incompatible with PG. We are focus on the following problem: improving both the accuracy and the retrieval performance by making the quantizer suit for global routing process of PG. We define this problem as follow.
+
+\vspace{1ex}
+
+%\textbf{Problem 1:} \emph{Given a vector dataset $\mathcal{X}$, a training query set $\mathcal{X}_{\rm train}$, a pre-built PG $G(V,E)$, and a result set $\mathcal{R_{\rm train}} \subset \mathcal{X}$ produced by performing ANNS over $G$ for all queries from $\mathcal{X}_{\rm train}$. We aim to obtain a quantizer $\mathcal{Q}^*$ that satisfies:}
+
+\noindent\textbf{Problem:} \emph{Given a vector dataset $\mathcal{X}$, a query set $\mathcal{X}_{\rm query}=\{\vec{x}_{q_1},\dots,\vec{x}_{q_n}\}$ for $\mathcal{X}$, a pre-built PG $G(V,E)$, and a result set for all queries $\mathcal{R_{\rm query}}=\{\mathcal{R}_{1},\cdots,\mathcal{R}_n\}$ where $\mathcal{R}_i\subset \mathcal{X}$ contains $k$ vectors that are returned by performing ANNS over $G$ for each query vector $\vec{x}_{q_i}\in \mathcal{X}_{\rm query}$. We aim to obtain a quantizer $\mathcal{Q}$ that satisfies:}
+%\vspace{-0.25cm}
+\begin{equation}
+%\small
+%\fontsize{9.5pt}{2.6mm}\selectfont
+\begin{split}
+    \mathcal{Q} = arg \min_{\mathcal{Q}} \sum_{\vec{x}_{q_i} \in \mathcal{X}_{\rm query}} \sum_{\vec{x}_r \in \mathcal{R}_{i}} \delta((\mathcal{C}(\mathcal{Q}(\vec{x}_r)), \vec{x}_{q_i}) \quad .
+\end{split}
+\end{equation}
+
+\emph{According to Definition \ref{def:anns}, $\mathcal{R}_{\rm query}$ satisfies:}
+\begin{equation}
+    \mathcal{R}_{\rm query} = \{arg \min_{\mathcal{R}_i \subset \mathcal{X}} \sum \limits_{\vec{x}_r \in \mathcal{R}_i} \delta(\vec{x}_r,\vec{x}_{q_i})|\forall \vec{x}_{q_i}\in \mathcal{X}_{\rm query}\}\quad .
+\end{equation}
+
+Intuitively, the smaller distance between the quantized vectors of all elements in $\mathcal{R}_i$ and $\vec{x}_{q_i}$, the better $\mathcal{Q}$ fits in ANNS over a PG.
+%\noindent \emph{where the smaller distance between the quantized vectors of $\mathcal{R}$ and $\vec{x}_q$, the better $\mathcal{Q}$ fits in the retrieval process over a PG.}
+
+
+\vspace{0.1cm}
+\section{RPQ FRAMEWORK} \label{sec:roq}
+We propose an end-to-end routing-guided product quantization (RPQ) for graph-based ANNS. RPQ combines the local neighborhood features and global routing features of a PG into a learned quantizer $\mathcal{Q}$. We start with the motivation behind our solution (\S \ref{sec:intuition}), then briefly introduce each component of RPQ in \S \ref{sec:framework}.
+
+\begin{figure*}[t]
+\vspace{-0.2cm}
+\centering
+\includegraphics[width=0.9\linewidth]{pic/fig2.pdf}
+\vspace{-0.3cm}
+\caption{\textbf{A pipeline of our RPQ framework}}\label{fig:2}
+\vspace{-0.4cm}
+\end{figure*}
+
+\subsection{Motivation} \label{sec:intuition}
+Given a query vector $\vec{x}_q$ and a PG $G$, routing on $G$ is often performed as a \textit{beam search} \cite{prokhorenkova2020graph} that starts from an entry vertex and ends up at the $k$ vertices whose vectors are the closest to $\vec{x}_q$. The key of beam search is the next-hop selection at each visiting vertex. It maintains a global candidate set with $h$ candidate vertices ($h$ is the beam size that controls the search's width). During the beam search, the global candidate set is updated using each visiting vertex's neighbors based on their distances to $\vec{x}_q$ and the closest one would be selected as the next-hop. In PQ-integrated graph-based ANNS, such a distance can be computed in two ways: \textit{Symmetric Distance Computation} (SDC) \cite{jegou2010product} quantizes both $\vec{x}_q$ and $\vec{x}_v$ as $\vec{x}_q'$ and $\vec{x}_v'$, then computes distance as $\delta(\vec{x}_v',\vec{x}_q')$; \textit{Asymmetric Distance Computation} (ADC) \cite{jegou2010product} only quantizes $\vec{x}_v$ and computes distance as $\delta(\vec{x}_v',\vec{x}_q)$. ADC is widely used in practice as it yields a lower distance error and results in a better recall \cite{jegou2010product}. In this paper, we adopt ADC for distance computation. Given this premise, we next provide Theorem \ref{th:motivation} to clarify the importance of considering both neighborhood and routing features in RPQ for learning a good quantizer $\mathcal{Q}$.
+
+%The key to the next hop selection at the vertex v is to use the neighbors of v to sort the global candidate points of the beam search. Given a neighbor v x ∈ N ( v ), the sorting order is determined by the distance comparison between any two neighbor quantization vectors to ~ x q
+% to facilitate graph-based ANNS
+%\textcolor{red}{Greedy search is a simple algorithm used to obtain the nearest neighbor of the query. The process begins by selecting an initial vertex and taking greedy steps towards $\vec{x}_q$ on the graph. At each step, all neighbors of the current vertex are evaluated, and the one closest to $\vec{x}_q$ is chosen. However, recent methods have improved accuracy by employing a heuristics technique known as beam search, where a dynamic list of several candidates is maintained instead of just a single optimal vertex \cite{prokhorenkova2020graph}. In PQ-integrated graph-based ANNS, computing distances between the query $\vec{x}_q$ and the vectors $\mathcal{X}$ of vertices $V$ exist two methods: \textit{Symmetric Distance Computation} (SDC) quantizes both $\vec{x}_q$ and $\mathcal{X}$, while \textit{Asymmetric Distance Computation} (ADC) only quantizes $\mathcal{X}$. ADC yields a lower distance error because it doesn't encode $\vec{x}_q$ and has few impact on memory footprint \cite{jegou2010product}, so ADC is used widely.} 
+
+%\textcolor{red}{The fundamental idea behind our RPQ is that the graph-based ANNS relies on two key types of distance calculations: (1) distances between neighbors and (2) distances between neighbors and the query.} Similarly, this principle generalizes to the PQ-integrated graph-based ANNS. We show this by Theorem \ref{th:motivation}. Thereby, we claim that only considering the neighborhood feature is insufficient for obtaining an effective quantizer $\mathcal{Q}$ to facilitate graph-based ANNS and the important routing feature is necessary to be considered as well.
+
+\vspace{0.1cm}
+\begin{myTheorem}
+\label{th:motivation} Given a PG $G(V,E)$ and a query $\vec{x}_q$. Suppose the graph-based ANNS is now visiting a vertex $v\in V$, then the next-hop selection for ANNS at $v$ depends on the distances among $v$'s neighbors and the distances between all neighbors and $\vec{x}_q$.
+%and it has $h$ candidates for search expansion
+%\textcolor{red}{In the context of graph-based ANNS, given a PG $G(V,E)$ built for a vector dataset $\mathcal{X}$ and a query $\vec{x}_q$. Suppose that vertex $v \in V$ is currently being visited, let $v_x$ represent one of the neighbors of $v$, let $v_y$ denote any other neighbor. The selection of next-hop for ANNS at $v$ depends on both the distance between neighbors $\delta(\vec{x}_{v_x},\vec{x}_{v_y})$ and the distances between neighbors and query, i.e., $\delta(\vec{x}_{v_x}, \vec{x}_q)$ and $\delta(\vec{x}_{v_y}, \vec{x}_q)$.}
+\end{myTheorem}
+
+\vspace{-0.15cm}
+\begin{proof}
+The key of next-hop selection at a vertex $v$ is updating the global candidates of beam search using $v$'s neighbors. Given a neighbor $v_x\in N(v)$, its ranking order is determined by the distance comparison of the quantized vectors of $v_x$ and any other neighbor $v_y\in N(v)$ to $\vec{x}_q$, i.e., $\sum_{\vec{x}_{v_y} \in N(v)} \delta(\vec{x}_{v_x}',\vec{x}_{q}) -\delta(\vec{x}_{v_y}', \vec{x}_{q})$. 
+
+We have the distance $\delta(\vec{x}_{v_x}',\vec{x}_{q})$ ($\delta(\vec{x}_{v_y}',\vec{x}_{q})$ is similar) as follows.
+\begin{equation}
+\hspace{-0.6cm}
+\small
+\begin{aligned}
+    \delta(\vec{x}_{v_x}',\vec{x}_{q}) &= \lVert \vec{x}_{v_x}' - \vec{x}_{q} \rVert_2^2 
+    = 
+    \lVert \vec{x}_{v_x}' - \vec{x}_{v_y}' + \vec{x}_{v_y}' - \vec{x}_{q} \rVert_2^2 \\
+    & = 
+    \lVert \vec{x}_{v_y}' - \vec{x}_{v_x}' \rVert^2_2 + \lVert \vec{x}_{v_y}' - \vec{x}_q \rVert^2_2 - 2\langle \vec{x}_{v_y}' - \vec{x}_{v_x}', \vec{x}_{v_y}' - \vec{x}_q\rangle\\
+\end{aligned}
+\end{equation}
+
+Thus, the distance comparison between $\delta(\vec{x}_{v_x}',\vec{x}_{q})$ and $\delta(\vec{x}_{v_y}',\vec{x}_{q})$ can be calculated as follows.
+\begin{equation}
+\label{eq:cos_theta}
+\small
+\begin{aligned}
+    \lVert \vec{x}&_{v_x}' - \vec{x}_{q} \rVert_2^2 - \lVert \vec{x}_{v_y}' - \vec{x}_{q} \rVert_2^2  \\
+    &= \langle \vec{x}_{v_y}' - \vec{x}_{v_x}', \vec{x}_{v_y}' - \vec{x}_{v_x}' \rangle - 2\langle \vec{x}_{v_y}' - \vec{x}_{v_x}', \vec{x}_{v_y}' - \vec{x}_q\rangle \\
+    &=\langle \vec{x}_{v_y}' - \vec{x}_{v_x}', 2\vec{x}_q - \vec{x}_{v_x}' - \vec{x}_{v_y}'  \rangle \\
+    &=2\lVert \vec{x}_{v_y}' - \vec{x}_{v_x}' \rVert_2\lVert \vec{x}_q - \frac{\vec{x}_{v_x}' + \vec{x}_{v_y}'}{2} \rVert_2 \cos \theta
+\end{aligned}
+\end{equation}
+
+According to Eq. \ref{eq:cos_theta}, the comparison between $\delta(\vec{x}_{v_x}',\vec{x}_{q})$ and $\delta(\vec{x}_{v_y}',\vec{x}_{q})$ includes three terms: $\lVert \vec{x}_{v_y}' - \vec{x}_{v_x}' \rVert_2$ indicates the distance between two neighbors, $\lVert \vec{x}_q - \frac{\vec{x}_{v_x}' + \vec{x}_{v_y}'}{2} \rVert_2$ represents the distances between neighbors to the query, and $\cos\theta$ is the angle between the vectors $\vec{x}_{v_x}'-\vec{x}_{v_y}'$ and $\vec{x}_q - \frac{\vec{x}_{v_x}' + \vec{x}_{v_y}'}{2}$.
+\end{proof}
+
+\setlength{\textfloatsep}{0.1cm}
+\begin{table}
+  \setlength{\abovecaptionskip}{0.1cm}
+  \centering
+  \captionsetup{labelfont=bf}
+  \caption{\textbf{Recall@10 when considering different features}}
+  \label{tab:motivation}
+  %\renewcommand\arraystretch{2}
+   \renewcommand\arraystretch{1.6}
+  \scalebox{0.9}{
+  \begin{tabular}{c||c|c|c|c}
+    \hline
+    \textbf{Features $\downarrow$}         & \textbf{Sift}   & \textbf{Deep} & \textbf{Ukbench} & \textbf{Gist} \\
+    \hline
+    \hline
+    ranking w/ neighbor \& routing         & 0.700                & 0.710                & 0.790  & 0.732 \\
+    \hline
+    ranking by Eq. \ref{eq:cos_theta}             & 0.950                & 0.978               & 0.987 & 0.892 \\
+    \hline
+\end{tabular}
+}
+\end{table}
+
+%\vspace{-0.3cm}
+Table \ref{tab:motivation} shows a comparative experiment on ANNS's effectiveness using different terms in Eq. \ref{eq:cos_theta} for ranking global candidates during the beam search: ranking with the first two terms (1st row) and ranking with three terms (2nd row). The first two terms contribute a lot to the recall, while additional consideration of the third term provides extra improvement. Although the third term is difficult to be mathematically expressed, it is clear that $\cos \theta$ is related to the first two terms. Motivated by this, we propose that optimizing the PQ for graph-based ANNS requires considering not only the neighborhood features but also the PG routing features. 
+
+%Building upon this idea, we present RPQ framework in \S \ref{sec:framework}.
+
+
+% \vspace{1ex}
+%\vspace{-0.1cm}
+\subsection{RPQ Framework} \label{sec:framework}
+Figure \ref{fig:2} illustrates the pipeline of RPQ that contains three modules: \textit{differentiable quantizer}, \textit{feature extractor}, and \textit{multi-feature joint training}. The differentiable quantizer plays an important role of the entire RPQ, which enables the back-propagation of end-to-end learning. It converts original vectors into compact codes. All compact codes are taken as input of feature extractor to get representative neighborhood and routing features for a specific PG. Finally, the multi-feature joint training continuously optimize the differentiable quantizer using feature-aware losses via back-propagation. 
+%We briefly introduce all modules below and \textcolor{blue}{show their details in \S \ref{sec:model}-\S \ref{sec:training}}.
+
+\vspace{0.1cm}
+\noindent\textbf{Differentiable quantizer (\S \ref{sec:loss}).} The differentiable quantizer consists of two steps: (1) \textit{adaptive vector decomposition} and (2) \textit{differentiable quantization}. Given an original $D$-dimensional vector $\vec{x}_i$, it first automatically decomposes it into $M$ sub-vectors $\{\vec{x}_i^1,\cdots,\vec{x}_i^M\}$, of which every sub-vector has $D/M$ dimensions with balanced valuable information. Then, it converts each $\vec{x}_i^j$ to a compact code $\mathcal{Q}(\vec{x}_i^j)$ in a continuous space via a differentiable transformation. 
+%Given the compact code, we take them as input of feature extractor for obtaining neighborhood and routing features.
+
+% In RPQ, we propose a learnable differentiable quantizer, which embeds neighborhood and routing features into both the codebook and compact codes, thus generating high-quality quantized vectors facilitating graph-based ANNS's effectiveness.
+
+\vspace{0.1cm}
+\noindent\textbf{Feature extractor (\S \ref{sec:model}).}  Feature extractor aims to extract the representative neighborhood and routing features for a specific PG, using the aforementioned quantized results.
+
+\vspace{0.1cm}
+\noindent\underline{Neighborhood features.} Given a PG $G$ = $(V,E)$ and a node $u\in V$, we use $\vec{x}_u$ with a node specifier to indicate its corresponding original vector in the vector dataset $\mathcal{X}$ because there is a bijection from $\mathcal{X}$ to $V$. We expect that for each neighbor $v$ of $u$ in $G$, i.e., $\forall v\in N(u)$, their quantized vectors $\vec{x}_u'$ and $\vec{x}_v'$ are closer if their original vectors $\vec{x}_u$ and $\vec{x}_v$ are closer in $\mathcal{X}$, and vice versa. To achieve this, RPQ employs contrastive learning based on a set of triplets to embed the neighborhood relationship into the differentiable quantizer. We define the positive and negative sample of a triplet as follows.
+%Given a PG $G$ and a node $u\in V$, we expect that for each neighbor $v$ of $u$ in $G$, i.e., $\forall v\in N(u)$, their quantized vectors $\vec{x}_u'$ and $\vec{x}_v'$ are closer if their original vectors $\vec{x}_u$ and $\vec{x}_v$ are closer in the original vector dataset $\mathcal{X}$, and vice versa. To achieve this, RPQ employs contrastive learning based on a set of triplets to embed the neighborhood features into learned PQ. We define the positive and negative sample of a triplet as follows.
+%reconstructed by compact codes and codebook
+
+
+\vspace{0.1cm}
+\begin{myDef}
+\label{def:positive_sample}
+\textbf{Positive sample.} Given a PG $G(V,E)$ and a vertex $v\in V$, we define a positive sample of $v$'s quantized vector $\vec{x}_v'$ as $\vec{x}_{v_+}'$, where $v_+$ is one of the $k_{\rm pos}$ nearest neighbors from $v$'s neighborhood. We use $k_{\rm pos}$ to control the scope from where the positive sample comes.
+\end{myDef}
+
+\vspace{0.1cm}
+\begin{myDef}
+\label{def:negative_sample}
+\textbf{Negative sample.} Given a PG $G(V,E)$ and a vertex $v\in V$. We define a negative sample of $v$'s quantized vector $\vec{x}_v'$ as $\vec{x}_{v_-}'$, where $v_-$ is one of the $k_{\rm neg}$ nearest neighbors (besides the former $k_{\rm pos}$ neighbors) from the neighborhood of $v$. Here, we use a parameter $k_{\rm neg}$ to control the scope from where the negative sample comes.
+\end{myDef}
+
+Given a set of triples $\{\langle \vec{x}_{v_+}', \vec{x}_v', \vec{x}_{v_-}'\rangle\}$, RPQ aims to make those closely connected neighbors $\langle \vec{x}_{v_+}', \vec{x}_v'\rangle$ more closer and other neighbors $\langle \vec{x}_v', \vec{x}_{v_-}'\rangle$ as far away as possible.
+%Thus, given a vector $\vect{x}_v$ for $\forall v\in V$ as an anchor, we have a triplet as $\langle \vec{x}_{v_+}, \vec{x}_v, \rangle \vec{x}_{v_-}$
+
+%Here, we use a parameter $k_{\rm pos}$ ($k_{\rm neg}$) to control the scope from where the positive (negative) sample comes from. In \S xx, we 
+
+\vspace{0.1cm}
+\noindent\underline{Routing features.} Given a query vector $\vec{x}_q$ and a PG $G$, the routing is performed as a beam search over $G$ that starts from an entry vertex $v_e$ to the $k$ vertices whose quantized vectors are the closest to $\vec{x}_q$. We consider the decision-making process at each visited vertex during the entire routing as the routing features. Intuitively, the more good decisions made during the routing, the more likely the search would locate in the neighborhood of $\vec{x}_q$ and return the nearest neighbors of $\vec{x}_q$. We define the routing features as follows.
+%Since the routing decision is made based on \textcolor{blue}{the ADC distances between all candidates and $\vec{x}_q$}, 
+
+%Given a query vertex $\vec{x}_q$ and an entry vertex $\vec{x}'_e$, the routing path from $\vec{x}'_e$ to $\vec{x}'_q$ is denoted by $\vec{x}'_e\rightsquigarrow \vec{x}'_q$. Comparing with recording the entire routing path as routing features, we prefer to consider the decision-making process at each vertex $\vec{x}'_v\in \vec{x}_e\rightsquigarrow \vec{x}'_q$ as the routing features. Intuitively, the more good decisions made during the routing procedure, the more likely the search would locate in the neighborhood of $\vec{x}'_q$ and return the nearest neighbors of $\vec{x}'_q$. Since the routing decision is made based on the distances between all candidates and $\vec{x}'_q$, we define the routing features as follows.
+
+\vspace{0.1cm}
+\begin{myDef}
+\label{def:routing_feature}
+\textbf{Routing features.} Given a PG $G(V,E)$, a query vector $\vec{x}_q$, and a real routing process starting from an entry vertex $v_e$. We define the routing features for $\vec{x}_q$ as a set $\mathcal{B}(\vec{x}_q)=\{b_{1},\cdots,b_{L}\}$. Here, each $b_i=\{\mathcal{Q}((\vec{x}_{v_1}),\cdots,\mathcal{Q}(\vec{x}_{v_h})\}$ records the ranked compact codes (in ascending order of $\delta(\vec{x}_{v_j}',\vec{x}_q)$) of $h$ candidate vertices for the next-hop decision at the $i$-th step of beam search, and $L \in \mathbb{N}$ is the number of decisions have made during the routing of beam search.
+\end{myDef}
+
+%Given a PG $G(V,E)$, a \textcolor{blue}{query vector $\vec{x}_q$}, and a real routing path $\vec{x}'_e\rightsquigarrow \vec{x}'_q$ from an entry vertex $\vec{x}'_e$, we define the routing features as a set $\mathcal{B}(\vec{x}'_q)=\{b_{1},\cdots,b_{L}\}$. Here, each $b=\{\vec{x}'_{v_1},\cdots,\vec{x}'_{v_h}\}$ denotes $h$ ranked candidates (in ascending order of distance to $\vec{x}'_q$) at a vertex $\vec{x}'_v\in \vec{x}'_e\rightsquigarrow \vec{x}'_q$, and $L \in \mathbb{N}$ is the number of decisions have made during routing procedure.
+
+\vspace{0.1cm}
+\noindent\textbf{Multi-feature joint training module (\S \ref{sec:training}).} Finally, we take above neighborhood and routing features as training data to optimize the differentiable quantizer with two feature-aware losses. In this way, the neighborhood and routing features would be embedded into the learned quantizer, thus facilitating the graph-based ANNS.
+
+%thus making the quantizer more adaptive to graph-based ANNS methods.
+
+
+ \section{Differentiable quantizer} 
+\label{sec:model}
+%We discuss two steps of our differentiable quantizer below.
+
+\vspace{0.1cm}
+\noindent\textbf{Adaptive vector decomposition.} Existing PQ methods usually apply vertical division to divide a $D$-dimensional vector into $M$ sub-vectors, of which the first $D/M$ dimensions belongs to the first sub-vector and the $[D/M+1,2D/M]$ dimensions belong to the second sub-vector, etc. In this way, it causes a critical issue, that is: the dimensions with valuable intrinsic features would unbalancedly locate in each sub-vector \cite{ge2013optimized}, resulting in meaningless quantized sub-vectors from those sub-vectors with less intrinsic features. 
+
+To handle this, we present an adaptive vector decomposer, to automatically determine which dimensions belong to each sub-vector by applying a square orthonormal matrix $R$ for all vectors to make the valuable dimensions uniformly distributed among all sub-vectors \cite{ge2013optimized, norouzi2013cartesian}. Specifically, our adaptive vector decomposition involves following steps. (1) We introduce a skew-symmetric matrix $A \in \mathbb{R}^{D \times D}$ as a group of learnable parameters. (2) We then use exponential algorithm to initialize the square orthonormal matrix $R$ based on $A$, denoted by $R= exp(A)$, where $exp(\cdot)$ indicates the matrix exponential. The orthogonality follows from $exp(A)^T= exp(A^T) = exp(-A) = exp(A)^{-1}$. (3) Given a vector $\vec{x}_v\in \mathcal{X}$, we rotation it as $R\vec{x}_v$, thus balancing the informativeness across the entire vector. (4) We divide the rotated vector $R\vec{x}_v$ into $M$ sub-vectors $\{R\vec{x}_v^1, \cdots, R\vec{x}_v^M\}$.
+%, of which every sub-vector has $D/M$-dimensions. 
+%Make the valuable dimensions equally dispersed among all sub-vectors
+
+We take the decomposed sub-vectors as input of differentiable quantization and update the learnable parameters $A$ by multi-features joint training (\S \ref{sec:training}) using the features obtained in \S \ref{sec:loss}, thus continuously optimizing $A$ to generate a good $R$ for better vector decomposition. {\cite{ge2013optimized} presents a covariance matrix to measure the value of each dimension in a vector. We use it to visualize the original and optimized distribution of valuable dimensions before and after adaptive vector decomposition in Figure \ref{fig:valuedist} as a case study. Take an vector with 128 dimensions from Sift1M as an example (8 rows of sub-vectors with 16 dimensions for each are provided on the left part), the right part shows the sub-vectors after 100 iterations of optimization on $A$. It is evident that the valuable dimensions are uniformly distributed among all sub-vectors.
+
+%where two vectors with 128 dimensions from Sift 1M and (b) is a vector from Deep 1M, and  . Note that, the redder the color, the more important the dimension. It is evident that after 100 iterations of optimization on $A$, the valuable dimensions are uniformly distributed among all sub-vectors.}
+
+\begin{figure}
+%\vspace{-0.2cm}
+\includegraphics[width=90mm]{pic/fig3.pdf}
+\vspace{-0.6cm}
+\caption{\textbf{Differentiable quantizer}}\label{fig:3}
+\vspace{-0.1cm}
+\end{figure}
+
+\vspace{0.1cm}
+\noindent\textbf{Differentiable quantization.} Given a set of rotated sub-vectors $\{R\vec{x}_v^1,\dots, R\vec{x}_v^M\}$ of $\vec{x}_v$ and a codebook $\mathcal{C}=\{\mathcal{C}^1,\dots,\mathcal{C}^M\}$ of which each $\mathcal{C}^j$ involves $K$ codewords, we can straightforwardly quantize sub-vectors as follows. First, for each $R\vec{x}_v^j$, we compute its distance to every codeword from the $j$-th codebook $\mathcal{C}^j$. Then, we apply the \emph{argmin} function to select the closest codeword to $R\vec{x}_v^j$ and use its identifier as the compact code of $R\vec{x}_v^j$, denoted by $\mathcal{Q}(R\vec{x}_v^j)$. Given a set of compact codes $\{\mathcal{Q}^1(R\vec{x}_v^1),\dots, \mathcal{Q}^M(R\vec{x}_v^M)\}$, we can easily get their quantized sub-vectors $\{\mathcal{C}^1(\mathcal{Q}^1(R\vec{x}_v^1)),\dots, \mathcal{C}^M(\mathcal{Q}^M(R\vec{x}_v^M))\}$ according to Definition \ref{def:pq}. However, we face a challenge to use this
+quantized sub-vectors for training, that is: the \emph{argmin} function is non-differentiable, thus making back-propagation invalided from the compact code to its corresponding sub-vector.
+
+%Since the codeword assignment probability and Gumbel-Softmax are differentable, we can conduct back-propagation s
+To handle this problem, we present a differentiable approximation instead of the \textit{argmin} function to encode a sub-vector as compact code. First, we compute a \textit{codeword assignment probability} for each sub-vector, showing the probability of this sub-vector would be encoded by a specific codeword. Then, we use \textit{Gumbel-Softmax}\cite{maddison2016concrete, jang2016categorical} to compute an approximate compact code based on above assignment probabilities. Since the codeword assignment probability and Gumbel-Softmax are differentable, the whole quantization is also differentable.
+
+\vspace{0.1cm}
+\noindent\underline{Codeword assignment probability.} Given a rotated sub-vector $R\vec{x}^j$, a codebook $\mathcal{C}^j$, we compute the probability of $R\vec{x}^j$ is encoded by the $k$-th codeword from $\mathcal{C}^j$ as Eq. \ref{eq:7}.
+\begin{equation}
+    p(\vec{c}_{k}^j|{R\vec{x}}^j)=\frac{\exp(\delta({R\vec{x}}^j, \vec{c}_{k}^{\,j}))}{\sum\limits^{K}_{k=1} \exp(\delta({R\vec{x}}^j, \vec{c}_{k}^{\,j}))}  \label{eq:7}
+\end{equation}
+
+%\vspace{0.1cm}
+\noindent\underline{Approximate compact code.} By using Eq. \ref{eq:7}, we can get $K$ probabilities $\{p(\vec{c}_{1}^j|{R\vec{x}}^j),\dots,p(\vec{c}_{K}^j|{R\vec{x}}^j)\}$ of a sub-vector $R\vec{x}^j$ to be encoded by $K$ codewords from $\mathcal{C}^j$. Next, we apply Gumbel-Softmax on these probabilities to get an approximate compact code of $R\vec{x}^j$ by Eq. \ref{eq:gumbel-softmax}:
+\begin{equation}
+\label{eq:gumbel-softmax}
+    \mathcal{Q}^j({R\vec{x}}^j)={\rm softmax}\{\log p(\vec{c}_{k}^{\,j}|{R\vec{x}}^j)+z_k,k=1,\dots,K\}\quad ,
+\end{equation}
+\noindent where $z_k$ is a sample from the standard Gumbel distribution that can be obtained as \emph{$z_k=-\log(-\log {\rm Uniform}(0,1))$}. Since Eq. \ref{eq:7} and Eq. \ref{eq:gumbel-softmax} are differentiable, it is possible to use the loss (discussed in \S \ref{sec:loss}) to update the square orthonormal matrix $R$ via back-propagation, therefore update the skew-symmetric matrix $A$ because of $R=\exp(A)$. The better the $A$ is, the better the sub-vectors are obtained.
+
+\begin{figure}
+\centering
+%\vspace{-0.2cm}
+\includegraphics[width=80mm]{pic/fig4.pdf}
+\vspace{-0.4cm}
+\caption{\textbf{A case study of valuable dimensions' distribution (the redder the color, the more the value of a dimension)}}
+\label{fig:valuedist}
+%\vspace{-0.1cm}
+\end{figure}
+
+\vspace{0.2cm}
+\section{Sampling-based Feature Extractor}  \label{sec:loss}
+In this section, we present a sampling-based method to extract both neighborhood and routing features for end-to-end PQ learning.
+
+\vspace{0.1cm}
+\noindent\textbf{Neighborhood features sampling.} Given a vertex $v\in V$ with a quantized vector $\vec{x}_v'$, where $V$ is a vertex set of a PG $G=(V,E)$, a straightforward sampling method is to take all $v$'s 1-hop neighbors $N(v)$ as the population, and conduct a random sampling to collect one positive sample as the quantized vector $\vec{x}_{v_+}'$ of a vertex $v_+$ from $N(v)$ and collect one negative sample as the quantized vector $\vec{x}_{v_-}'$ of a vertex $v_-$ from the remaining vertices $V\setminus N(v)$. This method is easy to implement, however, it suffers from one critical issue, that is: in most of the popular PGs, e.g., HNSW \cite{malkov2018efficient}, NSG \cite{fu2017fast}, Vamana \cite{jayaram2019diskann}, a vertex's neighbors may not be its top nearest vertices. This is because a PG often leverage some secondary nearest vertices serving as \textit{highways} or \textit{shortcuts} to connect remote vertices, thus enhancing the ability of searching a query vertex that is far away from the entry \cite{malkov2014approximate, prokhorenkova2020graph, malkov2018efficient}. This inspires us to present an $n$-propagation sampling method to collect positive/negative samples from a $n$-hop neighborhood of a vertex $v$.
+
+\begin{algorithm}[t]
+%\DontPrintSemicolon
+    \SetAlgoLined
+    \KwIn {vertex $v \in V$, quantizer $\mathcal{Q}$, codebook $\mathcal{C}$, hop number $n$, threshold of sampling $k_{\rm pos}$ and $k_{\rm neg}$}
+    \KwOut {triplet $\langle \vec{x}_{v_+}',\vec{x}_v',\vec{x}_{v_-}' \rangle$}
+
+    $N_{n}(v) \leftarrow \emptyset, S \leftarrow N(v), {\rm {\sf Visit}} \leftarrow \emptyset$ \;
+    \For {$1$ to $n$} {
+        \For{$\forall v_i \in S$}{
+            $N_{n}(v) \leftarrow N_{n}(v) \cup v_i, {\rm {\sf Visit}} \leftarrow {\rm {\sf Visit}} \cup v_i$ \;
+            \For{$\forall v_j \in N(v_i)$} {
+                $N_{n}(v) \leftarrow N_{n}(v) \cup v_j$ \;
+            }
+        }
+        $S \leftarrow N_n(v) \setminus {\sf Visit}$ \;
+    }
+    sort $N_n(v)$ in ascending order of the distance to $\vec{x}_v$ \;
+    $N_n(v).$resize$(k_{\rm pos} + k_{\rm neg})$ \;
+    $N_{\rm pos}(v)\leftarrow \emptyset, N_{\rm neg}(v)\leftarrow \emptyset$ \;
+    \For {$i = 1$ to $k_{\rm pos}$} {
+        $N_{\rm pos}(v) \leftarrow N_{\rm pos}(v) \cup N_n(v)[i]$ \;
+    }
+    $N_{\rm neg}(v) \leftarrow N_n(v) \setminus N_{\rm pos}(v)$ \; 
+    $v_+\leftarrow$ a random sample from $N_{\rm pos}(v)$ \;
+    $v_-\leftarrow$ a random sample from $N_{\rm neg}(v)$) \;
+    $\vec{x}_{v_+}' = \mathcal{C}(\mathcal{Q}(\vec{x}_{v_{+}})), \vec{x}_{v_-}' = \mathcal{C}(\mathcal{Q}(\vec{x}_{v_{-}}))$ \;
+    \Return $\langle \vec{x}_{v_+}',\vec{x}_{v},\vec{x}_{v_-}' \rangle$
+    \caption{$n$-propagation sampling}  \label{algo:1}
+\end{algorithm}
+
+Alg. \ref{algo:1} shows the procedure of $n$-propagation sampling. First, we collect a vertex $v$'s $n$-hop neighbors $N_{n}(v)$ as population (lines 2-10), where $S$ records vertices for propagation and {\sf Visit} is used to avoid duplicated visiting. Then, we collect positive and negative samples from $N_{n}(v)$ as follows.
+
+\vspace{0.1cm}
+\noindent\underline{Positive sampling.} Given the population $N_{n}(v)$, we introduce a parameter $k_{\rm pos}\in [1, |N_n(v)|)$ to indicate the top-$k_{\rm pos}$ nearest vertices that form the sampling scope of positive samples (lines 14-16). The larger the $k_{\rm pos}$, the more neighbors considered as candidates of positive sample, thus resulting in oversampling where some secondary nearest vertices would be sampled. In contrast, the smaller the $k_{\rm pos}$, the less neighbors considered as candidates of positive sample. This would result in undersampling where insufficient neighborhood features are considered. In our experimental study (\S \ref{sec:experiments}), we show $k_{\rm pos}$'s effect on learned PQ's effectiveness.
+
+
+\vspace{0.1cm}
+\noindent\underline{Negative sampling.} Given the population $N_{n}(v)$, we introduce a parameter $k_{\rm neg}\in [1, |N_n(v)|-k_{\rm pos}]$ to indicate $k_{\rm neg}$ secondary nearest vertices that form the sampling scope of negative samples (line 17). If $k_{\rm neg}=|N_n(n)|-k_{\rm pos}$, then it means we collect a negative sample from all remaining vertices besides top-$k_{\rm pos}$ nearest vertices. In fact, among these $|N_n(n)|-k_{\rm pos}$ secondary nearest vertices, some vertices are closer to $v$ than others and they usually are called as \textit{hard samples} and often more valuable for learning than others \cite{Cohan2020,xu2022academic,Wang2023}. If we can distinguish the hard samples from the top-$k_{\rm neg}$ nearest vertices, then the far away vertices from $v$ probably be distinguished easily. We use $k_{\rm neg}$ to control the scope of negative sample comes from. The smaller the $k_{\rm neg}$, the more hard samples would be considered. The larger the $k_{\rm neg}$, the more simple samples would be considered. It is widely-recognized that a balance between hard and simple samples is important to learning \cite{zhan2021optimizing}, therefore in \S \ref{sec:experiments}, we show $k_{\rm neg}$'s effect on learned PQ's effectiveness.
+
+
+
+\vspace{0.1cm}
+\noindent\textbf{Routing features sampling.} In \S \ref{sec:framework}, we define the routing features as all ranked candidates considered for next-hop selection during the entire beam search. Alg. \ref{algo:2} shows the procedure of the routing features sampling. We first collect a set of vectors from the vector dataset as the query samples, denoted by $\{\vec{x}_{q_1},\cdots,\vec{x}_{q_n}\}$ (line 1). Then, for each query vector $\vec{x}_q$, we start from an entry vertex $v_e$ (i.e., the global candidate set $b$ is initialized as $\{\mathcal{Q}(\vec{x}_{v_e})\}$) to perform beam search (lines 4-16). Specifically, at each step, we select the next-hop as the closest unvisited vertex $v^*$ to $\vec{x}_q$ by exploring its neighbors and updating $b$ with these neighbors' compact codes (lines 6-10). Next, we rank all global candidates in ascending order of their distances to $\vec{x}_q$ using ADC (line 11) and maintain the global candidate set with exactly $h$ elements (lines 12-14). Then, we add the global candidates $b$ at each step into $\mathcal{B}_q$ and repeat above until all vertices in $b$ have been visited (line 15). Finally, we add each $B_q$ for each $\vec{x}_q$ into $B_{\rm query}$ and return it as the routing features (line 17 \& 19). In a nutshell, suppose an entire beam search for a query $\vec{x}_q$ involves $l$ next-hop selections, then we have $\mathcal{B}_q=\{b_{1},\cdots,b_{l}\}$, of which each $b_i=\{\mathcal{Q}(\vec{x}_{v_1}),\cdots,\mathcal{Q}(\vec{x}_{v_h})\}$ denotes $h$ ranked candidates for the $i$-th next-hop selection.
+
+%we rank all global candidates from $b$ in ascending order of their distances to $\vec{x}_q$, i.e., $\delta(\vec{x}_{v_n}',\vec{x}_q,)$ using ADC (line 12), and we select the top-1 unvisited closest candidate to $\vec{x}_q$ as the next-hop for search expansion (line 4) until no more candidates for expansion (line x)}. In a nutshell, suppose an entire beam search involves $l$ next-hop selections and each selection requires to consider $h$ candidates, then we record a set $\mathcal{B}(\vec{x}_q')=\{b_{1},\cdots,b_{l}\}$ as the routing features, of which each $b_i=\{\vec{x}_{v_1}',\cdots,\vec{x}_{v_h}'\}$ denotes $h$ ranked candidates for the $i$-th next-hop selection.
+
+%To achieve such routing features, we do the following: First, we randomly generate a set of queries $\{\vec{x}_{q_1},\cdots,\vec{x}_{q_n}\}$ and \textcolor{blue}{perform beam search for each query using ADC for quantized vectors.} Alg. \ref{algo:2} shows the procedure of the routing features sampling. Specifically, we start from the entry $\vec{x}_e'$ and initialization candidate with $\vec{x}_e'$ (lines 2). Then, we select the top-1 closest candidate to $\vec{x}_q'$ as the next-hop for search expansion until no more candidates for expansion (lines 3-16). In a nutshell, suppose a routing path involves $l$ next-hop decisions and each decision requires to consider $h$ candidates, then we record the set $\mathcal{B}(\vec{x}_q')=\{b_{1},\cdots,b_{l}\}$ as the routing features, of which $b=\{\vec{x}_{v_1}',\cdots,\vec{x}_{v_h}'\}$ denotes $h$ ranked candidates (in ascending order of distance to $\vec{x}_q'$).
+
+\begin{algorithm}[t]
+%\DontPrintSemicolon
+    \SetAlgoLined
+    \KwIn {quantizer $\mathcal{Q}$, codebook $\mathcal{C}$, entry vertex $v_e$, vector dataset $\mathcal{X}$, $h$ global candidates}
+    \KwOut {candidates set $\mathcal{B}_{\rm query}$ for $\mathcal{X}_{\rm query}$}
+    $\mathcal{X}_{\rm query}\leftarrow$ a set of query samples collected from $\mathcal{X}$ \;
+    $\mathcal{B}_{\rm query} \leftarrow \emptyset $ \;
+
+    \For {$\forall \vec{x}_{q} \in \mathcal{X}_{\rm query}$} {
+        $\mathcal{B}_{q} \leftarrow \emptyset, b \leftarrow \{\mathcal{Q}(\vec{x}_{v_e})\}, {\sf Visit} \leftarrow \emptyset$ \;
+
+        \While{$\exists v \in b$ {\rm \textbf{and}} $v \notin {\sf Visit}$} {
+            $v^*\leftarrow$ the closest vertex $\in b$ to $\vec{x}_q$ \textbf{and} $\notin {\sf Visit}$ \;
+            ${\sf Visit} \leftarrow {\sf Visit} \cup v^*$ \;
+            \For{$\forall v_j \in N(v^*)$ {\rm \textbf{and}} $v_j \notin {\sf Visit}$} {
+                    $b \leftarrow b \cup \mathcal{Q}(\vec{x}_{v_j})$ \;
+            }
+            sort $b$ in ascending order of the distance to \textbf{$\vec{x}_q$} \;
+            \If{$b$.size() $> h$} {
+                $b$.resize($h$) \;
+            }
+            $\mathcal{B}_{q} \leftarrow \mathcal{B}_{q} \cup b$ \;
+        }
+        $\mathcal{B}_{\rm query} \leftarrow \mathcal{B}_{\rm query} \cup \mathcal{B}_{q}$
+    }
+    \Return $\mathcal{B}_{\rm query}$
+    \caption{routing features sampling}  \label{algo:2}
+\end{algorithm}
+
+
+%\vspace{-0.1cm}
+\section{Multi-feature joint training module} \label{sec:training}
+%\vspace{-0.1cm}
+We consider both the neighborhood and routing features to design two feature-aware losses and combine them as a \textit{multi-feature joint loss} to optimize the differentiable quantizer. The feature-aware losses includes two parts: the neighborhood feature loss and the routing feature loss. For the neighborhood features in forms of triplets $\{\langle \vec{x}'_{v_+},\vec{x}'_v,\vec{x}'_{v_-} \rangle\}$, we employ contrastive learning to minize the triplet loss in the quantization space. Intuitively, we want $\vec{x}_v'$ to be closer to it's positive sample $\vec{x}_{v+}'$ than to the negative sample $\vec{x}_{v-}'$. The triplet loss is provided in Eq. \ref{eq:nein}, where $\sigma$ is the margin hyperparameter.
+\begin{equation}
+    \mathcal{L}_{\rm neighborhood} = max(0, \sigma + \delta(\vec{x}_v', \vec{x}_{v+}') - \delta(\vec{x}_v', \vec{x}_{v-}'))   \label{eq:nein}
+\end{equation}
+%and optimizing the differentiable quantizer represented in \S \ref{sec:loss}. 
+%We expect that using the quantized vectors for graph-based ANNS can achieve a comparable effectiveness with that using the original vectors. 
+
+For routing features, suppose $\mathcal{Q}(\vec{x}_{v^*})$ is the compact code of next-hop selected vertex $v^*$ from the given candidates $b_i$ at the $i$-th next-hop selection of the beam search for query $\vec{x}_{q}$ (line 6 of Alg. \ref{algo:2}). Then, the goal of learning is to maximize a conditional probability of choosing $\mathcal{Q}(\vec{x}_{v^*})$ from $b_i$ (Eq. \ref{eq:nexthop}).
+\begin{equation}
+\label{eq:nexthop}
+    P(\mathcal{Q}(\vec{x}_{v^*}) | \vec{x}_{q}, b_i) = \frac{e^{(\delta(\mathcal{C}(\mathcal{Q}(\vec{x}_{v^*})), \vec{x}_{q})/\tau}}{\sum\limits_{\mathcal{Q}(\vec{x}_{j}) \in b_i} e^{(\delta(\mathcal{C}(\mathcal{Q}(\vec{x}_{j})),\vec{x}_{q}) / \tau}}  
+\end{equation}
+
+To achieve this, we establish the routing feature loss by maximizing the log-likelihood of optimal next-hop selection.
+%Hence, RPQ maximizes the log-likelihood of optimal decisions as follows:
+\begin{equation}
+\begin{aligned}
+    \mathcal{L}_{\rm routing} = - \sum\limits_{\mathcal{B}_{q} \in \mathcal{B}_{\rm query}} \sum\limits_{b_i \in \mathcal{B}_{q}} \log P(\mathcal{Q}(\vec{x}_{v^*}) | \vec{x}_{q}, b_i) 
+\end{aligned}
+\end{equation}
+
+Finally, we use the sum of above two losses with a learnable coefficient $\alpha$ as the multi-feature joint loss.
+\begin{equation}
+    \mathcal{L} = \mathcal{L}_{\rm routing} + \alpha \mathcal{L}_{\rm neighborhood}
+\end{equation}
+
+We aim to minimize the joint loss $\mathcal{L}$ using mini-batch gradient descent with the \textit{Adam optimizer} \cite{kingma2014adam}. We use one cycle learning rate schedule for faster model convergence and the hyperparameters are: LR $=$ 1e-3, decay rate $=$ 0.2. 
+
+\vspace{-0.1cm}
+\section{Integration of Learned PQ with Existing Graph-based ANNS} \label{sec:search}
+%In this section, we show how to integrate our routing-guided learned PQ with existing graph-based ANNS. 
+
+According to whether the external drive is involved, the application of using PQ to optimize memory usage is generally divided into two categories: (1) PQ-integrated graph-based ANNS for hybrid scenario \cite{jayaram2019diskann, ren2020hm}, such as DiskANN \cite{jayaram2019diskann} and its variants Filter-DiskANN \cite{gollapudi2023filtered}, OOD-DiskANN \cite{jaiswal2022ood}, and Fresh-DiskANN \cite{singh2021freshdiskann}. They only record the small volume of compact codes and codebook in memory, while the large volume of original vectors and PG index are retained in SSD. The search requires the participation of both the PQ distance and original vector distance. (2) PQ-integrated graph-based ANNS for in-memory scenario \cite{douze2018link, faissweb}. In this case, the usual practice is to replace the original vectors with a smaller amount of compact codes and codebook, and store them in memory together with the PG. Different from the hybrid scenario, the search in this case only relies on the PQ distance. Both scenarios assume that the memory is too small to load all of the original vectors. For the former, it is usually less efficient than the latter due to the extra SSD I/Os, but the effectiveness is largely improved by using the original distance. Both two are individually suitable for distinct application demands, taking into account the balance between recall and delay\cite{simhadri2022results, guo2022manu}.
+
+%For the latter, it is more efficient as all computations are performed in memory but the effectiveness is affected because only the PQ distance is used.
+
+%\textcolor{blue}{We next discuss the integration our RPQ with graph-based ANNS for both hybrid and in-memory scenarios.}
+
+\vspace{0.1cm}
+\noindent \underline{Integration of RPQ for hybrid scenario}. We take DiskANN as an example, when integrating RPQ with DiskANN, this process is made straightforward through the framework inherent to DiskANN. First, we replace DiskANN's PQ with the differential quantizer of our RPQ. During the query processing phase, given a query $\vec{x}_q$, we first divide it into sub-vectors using the orthonormal matrix $R$, then apply ADC to pre-compute the distances between each sub-vector $R\vec{x}_q^{\, i}$ and all sub-codewords, and maintain these distances in a lookup table. Finally, the beam search is gradually performed in the same way as DiskANN: It first obtains a set of candidates for next-hop selection at each visited vertex by quickly checking the lookup table instead of computing the full distance using original vectors. Then, it selects the next-hop vertex using the original vectors resident in SSD via distance reranking.
+
+%We take DiskANN as an example, when integrating RPQ with DiskANN, this process is made straightforward through the framework inherent to DiskANN. \textcolor{blue}{First, we can seamlessly replace DiskANN's PQ method with the differential quantizer of our RPQ. Additionally, unlike DiskANN, an orthonormal matrix $R$ needs to be stored. The size of $R$ is quite small (e.g., 64 KB for BigANN dataset), with a space complexity of $O(D^2)$. During the query processing phase, the query $\vec{x}_q$ is initially transformed into $R\vec{x}_q$. Subsequently, we apply ADC to compute the PQ distance of each quantized vector to $R\vec{x}_q$ in the same way as DiskANN.}
+%In this paper, we integrate our RPQ with DiskANN. 
+% \subsection{Integrated with In-Memory PGs} \label{sec:base retrieval}
+
+\vspace{0.1cm}
+\noindent \underline{Integration of RPQ for in-memory scenario}. The integration process starts by replacing the original vectors with the differentiable quantizer of our RPQ. For each query vector, we also require to first initialize the lookup datable by pre-computing PQ distances between each sub-query vector and $K$ sub-codewords via ADC. Then, the routing process is gradually performed to select the next-hop at each visited vertex by checking the lookup table instead of computing the full distance using original vectors. Different from DiskANN, PQ-integrated graph-based ANNS for in-memory scenario doesn't have the step of distance reranking and it selects the next-hop only based on the PQ distance using lookup datable.
+
+%Since PQ-integrated graph-based ANNS often select HNSW and NSW as the underling PG, 
+%\textcolor{blue}{The integration process starts by replacing the original vectors with the differentiable quantizer of our RPQ. During the query processing phase, we apply ADC to calculate the PQ distance. The query $\vec{x}_q$ is initially transformed into $R\vec{x}_q$ using the orthonormal matrix. Subsequently, $R\vec{x}_q$ is divided into several sub-vectors, and we pre-compute the distances between each sub-vector $\vec{x}_q^j$ and the $K$ sub-codewords $\vec{c}^{j}_k$. These distances are maintained in a lookup table for efficient retrieval. Finally, the routing process is gradually performed to select the next-hop at each visited vertex by checking the lookup table instead of computing the distance using original vectors.}
+
+%In-memory PGs currently have various algorithms with different topological structures \cite{wang2021comprehensive, fu2017fast, malkov2018efficient}. However, it is worth noting that our method can effectively adapt to different PGs, and we employ the same integration method for various in-memory PG algorithms. 
+
+\section{Experiments} \label{sec:experiments}
+%\href{https://github.com/Lsyhprum/BREWESS.git}{https://github.com/Lsyhprum/BREWESS.git}
+We present experiment results of our RPQ on five real-world datasets. The code and datasets have been made available at \cite{BREWESS}. Our evaluation seeks to address the following questions:
+
+\vspace{0.1cm}
+
+\noindent \textbf{Q1:} How do RPQ and other PQ methods perform in terms of effectiveness and efficiency for graph-based ANNS? (\textbf{\S \ref{sec:efficiency}})
+
+\noindent \textbf{Q2}: How do different strategies contribute to RPQ? (\textbf{\S \ref{sec:ablation}})
+
+\noindent  \textbf{Q3}: How do parameters affect RPQ's performance? (\textbf{\S \ref{sec:parameter}})
+
+\noindent  \textbf{Q4}: How is the scalability of RPQ on the data scale? (\textbf{\S \ref{sec:scalability}})
+
+\subsection{Experimental Setting}
+
+\noindent \textbf{Datasets}. Table \ref{tab:dataset} shows the characteristics of widely used real-world datasets for performance evaluation. %Each dataset consists of a base set, query set, and ground-truth set.
+\begin{itemize}
+\item \textbf{BigANN}\cite{baranchuk2021benchmarks} includes descriptors extracted from an image dataset. We employed slices ranging in size from 1M to 1B, (1M, 10M, 100M, 1B) for scalability evaluation.
+\item \textbf{Deep}\cite{YandexBenchmark} includes the projected and normalized outputs from the last fully-connected layer of the GoogLeNet that was pretrained on the Imagenet classification task. Similar to BigANN, we employed four slices for evaluation too.
+%\item \textcolor{blue}{\textbf{Turing}\cite{Turing} consists of Bing queries encoded by Turing AGI v5 that trains Transformers to capture similarity of intent in web search queries. We employed slices ranging in size from 1M to 100M for scalability evaluation.}
+\item \textbf{Gist}\cite{laurent2010datasets} is an image dataset which contains about 1M data points with 960 dimensional features.
+\item \textbf{Sift}\cite{laurent2010datasets} contains 1M SIFT vectors with 128 dimensions.
+\item \textbf{Ukbench}\cite{UKBench} is a dataset that consists of about 1M images with 128 dimensional features.
+\end{itemize}
+
+For the training of our RPQ, similar to \cite{sablayrolles2018spreading, prokhorenkova2020graph, zhang2022connecting}, we configure the training set as a subset with 500K vectors and use the originally provided query set as the testing set.
+%Due to the lack of training set, we segment the dataset and select portions that do not overlap with the base set as the training set.
+
+\setlength{\textfloatsep}{0.15cm}
+\begin{table}
+\setlength{\abovecaptionskip}{0.1cm}
+\centering
+  \caption{\textbf{Dataset Statistics}}
+  \label{tab:dataset}
+  \renewcommand\arraystretch{1.3}
+  \scalebox{0.9}{
+  \begin{tabular}{c||c|c|c|c}
+    \hline
+    \textbf{Dataset}  & \textbf{Dimensions} & \textbf{Base} (M:$10^6$, B:$10^9$) & \textbf{Query}  & \textbf{LID}\cite{facco2017estimating}    \\
+    \hline
+    \hline
+    BigANN \cite{baranchuk2021benchmarks}            & 128 & 1M$\sim$1B         & 10,000               & 16.6\\
+    \hline   
+    Deep \cite{YandexBenchmark}          & 96   & 1M$\sim$1B          & 10,000               & 17.6\\
+    %\hline
+    %Turing \cite{Turing}                              &100 & 1M$\sim$100M
+            %& 10,000               & 30.5\\
+    \hline
+    Gist   \cite{laurent2010datasets}           & 960  & 1M       & 1,000                & 35.0\\
+    \hline
+    Sift \cite{laurent2010datasets}             & 128 & 1M        & 10,000                & 16.6                \\
+    \hline
+    Ukbench \cite{UKBench}        & 128     & 1M        & 200                &8.3\\
+    \hline
+    \end{tabular}
+    }
+    
+\end{table}
+
+\vspace{0.1cm}
+\noindent \textbf{Comparing algorithms}. We first introduce three generic PQ methods: (1) \textbf{PQ} \cite{jegou2010product} is a typical quantization method that is used in DiskANN \cite{jayaram2019diskann} and other large indices \cite{baranchuk2018revisiting, johnson2019billion}. (2) \textbf{OPQ} \cite{ge2013optimized} optimizes PQ's vector division and is reported as a reliable quantization method \cite{echihabi2020return, blalock2017bolt}. (3) \textbf{Catalyst} \cite{sablayrolles2018spreading} utilizes a compression network to optimize quantization. Next, we integrate them and our RPQ with existing graph-based ANNS methods to evaluate their performance in hybrid (SSD+memory) and in-memory scenarios, as we discussed in \S \ref{sec:search}. It is worth mentioning that we provide memory constraints for both scenarios via Docker technology, more details are provided in the Resource constraints part below.
+
+
+\begin{figure*}
+\setlength{\abovecaptionskip}{0.1cm}
+\centering
+\includegraphics[width=179mm]{pic/fig5.pdf}
+\caption{\textbf{QPS, Hops, Disk I/O time vs. Recall@10 for different PQ-integrated graph-based ANNS (using PQ, OPQ, Catalyst and RPQ) in hybrid scenario (integrated with DiskANN). Each column reports the results for the same dataset.}}
+\label{fig:QPS}
+\vspace{-0.2cm}
+\end{figure*}
+
+\vspace{0.1cm}
+\noindent\underline{Hybrid scenario (SSD+memory).} Since DiskANN and its variants are mainstream of this type of work, we establish comparing algorithms as follows. We retain the PG, i.e., Vamana, and original vectors in SSD, then we integrate four PQ methods with the same PG and vectors to form four algorithms. (1) \textbf{DiskANN-PQ} (the original DiskANN uses PQ \cite{jegou2010product} as default), (2) \textbf{DiskANN-OPQ}, (3) \textbf{DiskANN-Catalyst}, and (4) \textbf{DiskANN-RPQ}.
+
+\vspace{0.1cm}
+\noindent{\underline{In-memory scenario.} Since HNSW and NSG are reported as reliable graph-based ANNS algorithms in most of datasets \cite{Wang2021}, we evaluate the performance of PQ-integrated algorithms based on them. Note that, (5) \textbf{HNSW-PQ}\cite{faissweb, matsui2022arm, liu2023cmlocate} and (6) \textbf{L\&C}\cite{douze2018link, yang2021hierarchical} (L\&C uses a refined version of PQ \cite{jegou2010product}) are existing works that built atop HNSW, so we directly use them in our evaluation. Besides, we also establish (7) \textbf{HNSW-OPQ}, (8) \textbf{HNSW-Catalyst}, and (9) \textbf{HNSW-RPQ} for HNSW. Similar, we establish (10) \textbf{NSG-PQ}, (11) \textbf{NSG-OPQ}, (12) \textbf{NSG-Catalyst}, and (13) \textbf{NSG-RPQ} for NSG.
+
+\vspace{0.1cm}
+\noindent\textbf{Evaluation metrics.} We evaluate the search efficiency and accuracy with Queries Per Second (QPS) and Recall@$k$, which are widely used for graph-based ANNS \cite{fu2021high, douze2018link, Wang2021, jaiswal2022ood}. Specifically, QPS is the ratio of the number of queries to the search time, and Recall@$k$ is defined by Eq. \ref{eq:recall}. Besides, we introduce the number of routing hops, i.e., the number of next-hop selections during the routing process, and the average disk I/O time for a query as supplementary metrics to evaluate the search efficiency.
+
+\vspace{0.1cm}
+\noindent \textbf{Implementation setup}. The code of all comparing methods is publicly available in their respective GitHub repositories. All experiments were conducted on a Linux server with 8$\times$ NVIDIA Tesla V100, 2$\times$ Intel Xeon Processor (Skylake, IBRS) at 3.00GHz, and a 373G memory. 
+% The PGs' build algorithms are implemented in C++ and compiled with g++ 7.5. The indexes are built with all 40 threads, but the search is evaluated on a single thread. All experiments are performed at least three times.
+
+%Since the PG construction requires to load all the vectors in memory
+\vspace{0.1cm}
+\noindent \textbf{Resource constraints.} Similar to \cite{jayaram2019diskann,fu2017fast}, we use the full memory to build a one-shot PG for graph-based ANNS, i.e., Vamana for comparing methods (1)-(4) and HNSW, NSG for (5)-(13), and then we set the memory constraint via Docker to perform PQ-integrated graph-based ANNS. In DiskANN \cite{jayaram2019diskann}, it configures a fixed memory constraint as 64GB to record compact codes and codebook for all datasets. Such a configuration is unfair for some datasets. Suppose we set a fixed 64GB constraint, it is valid for BigANN-1B (600GB in total for PG and vectors), while it is invalid for BigANN-100M (60GB in total) as it can fit into 64GB memory. Different from \cite{jayaram2019diskann}, we set the memory constraint as a fixed fraction $f$ of the size of a dataset and graph. Here, we set $f=\frac{1}{32}\approx 3\%$ to get a more strict memory constraint than \cite{jayaram2019diskann}. For example, for 600GB BigANN-1B, we have the memory constraint as 18GB which is quite smaller than the fixed 64GB of \cite{jayaram2019diskann}. While for the 60GB BigANN-100M, we have the constraint as 1.8GB.
+
+\vspace{0.1cm}
+\noindent \textbf{Parameters}. For different PGs, we following the same procedure as \cite{Wang2021} to search for the optimal value of all the adjustable parameters, to make the algorithms' search performance reach the optimal level. The number of codewords in each sub-codebook is set to $K=$ 256, which enables the original vectors to be compactly encoded by several whole bytes. For the approximate process of Catalyst, we use the parameters as follows: $d_{out}=$ 40, $\lambda=$ 0.005 for 128 bits. For L\&C, we use the parameters as follows: $L=$ 8, $nsq=$ 1, $beta\_k=$ 1.
+
+\vspace{-0.3cm}
+\subsection{Efficiency and Effectiveness Evaluation} \label{sec:efficiency}
+
+\noindent\textbf{SSD-memory hybrid scenario}. Figure \ref{fig:QPS} reports the efficiency (QPS, Hops, and Disk I/O time) vs. effectiveness (Recall@$10$) results for PQ-integrated graph-based ANNS using four state-of-the-art PQ methods, namely PQ, OPQ, and Catalyst atop DiskANN. Each column in Figure \ref{fig:QPS} corresponds to a different dataset, and we utilized the maximum scale for these datasets (1B for BigANN and Deep, 100M for Turing, and 1M for others). All searches were carried out using 8 threads, making full use of I/O resources. Our evaluations consistently demonstrate that DiskANN-RPQ outperforms competitors using other PQ methods with a better QPS vs. Recall@$10$ (the further to the upper right, the better the result). For instance, given the same Recall@$10$ at 95\% in Gist, DiskANN-RPQ achieves a QPS of 251.98, which is 77\% improvement (or 1.77$\times$ faster) w.r.t. that of DiskANN-PQ with a QPS of 142.3. The QPS improvement for BigANN, Deep, and SIFT are 135\%, 320\%, and 12\%, respectively. This can be explained that our RPQ considers both the neighborhood and routing features to learn a differential quantizer that is more fit to the graph-based ANNS. Besides, since RPQ adopts an adaptive vector decomposition to make imbalanced vector features uniformly distributed among all sub-vectors, DiskANN-RPQ can well-support the imbalanced datasets such as Gist and Deep.
+
+\begin{figure*}
+\setlength{\abovecaptionskip}{0.1cm}
+\centering
+\includegraphics[width=179mm]{pic/fig6.pdf}
+%\vspace{-1.8cm}
+\caption{\textbf{QPS and Hops vs. Recall@10 for in-memory scenario (HNSW as the default PG)}}\label{fig:6}
+\vspace{-0.2cm}
+\end{figure*}
+
+\begin{figure*}
+\setlength{\abovecaptionskip}{-0.2cm}
+\centering
+\includegraphics[width=179mm]{pic/fig7.pdf}
+\vspace{-0.1cm}
+\caption{\textbf{QPS and Hops vs. Recall@10 for in-memory scenario (NSG as the default PG)}}\label{fig:7}
+\vspace{-0.3cm}
+\end{figure*}
+
+Moreover, we provide the Hops vs. Recall@$10$ and Disk I/O time vs. Recall@$10$ over all datasets in Figure \ref{fig:QPS}. Note that, Hops increases as Recall@$10$ increases. This is because that we need more routing steps to retrieve more accurate results. The more the hops, the more the SSD accesses are required, resulting in an increasing Disk I/O time and decreasing QPS.
+
+\vspace{0.1cm}
+\noindent\textbf{In memory scenario.} As mentioned in \S \ref{sec:search}, the memory footprint of PQ-integrated graph-based ANNS for in-memory scenario mainly comes from the PG storage. And the PGs for two 1B datasets (BigANN 1B and Deep 1B) are too large to be maintained in memory with a strict resource constraint. So, we only provided the results for datasets up to 100M in Figure \ref{fig:6} and Figure \ref{fig:7}. For both HNSW and NSG, the integrated methods with our RPQ perform better than others, which are attributed to our consideration of two types features and losses.
+
+\begin{table}[t]
+\setlength{\abovecaptionskip}{0.1cm}
+ \centering
+  \caption{\textbf{Training time (hours)}}
+  \label{tab:traincost}
+  \renewcommand\arraystretch{1.3}
+  \begin{tabular}{c||c|c|c|c|c}
+    \hline
+    \textbf{Methods} & \textbf{BigANN} & \textbf{Deep} & \textbf{Sift} & \textbf{Gist}  &  \textbf{Ukbench}  \\
+    \hline
+    \hline
+    Catalyst            & 3.27 & 3.25 & 0.64 & 4.24 & 0.61\\
+    \hline 
+    RPQ            & 3.25 & 3.17 & 0.51 & 4.56 & 0.42\\
+    \hline 
+\end{tabular}
+%\vspace{-0.2cm}
+\end{table}
+
+\begin{table}[t]
+\setlength{\abovecaptionskip}{0.1cm}
+  \centering
+  \caption{\textbf{Model size (MB)}}
+  \label{tab:modelsize}
+  \renewcommand\arraystretch{1.3}
+  \begin{tabular}{c||c|c|c|c|c}
+    \hline
+    \textbf{Methods} & \textbf{BigANN} & \textbf{Deep} &  \textbf{Sift} & \textbf{Gist}  &  \textbf{Ukbench}  \\
+    \hline
+    \hline
+    Catalyst            & 4.7 & 4.6            & 4.7 & 8.3 & 4.7\\
+    \hline 
+    RPQ            & 0.69 & 0.46         & 0.78 & 1.8 & 0.69\\
+    \hline 
+\end{tabular}
+\end{table}
+
+\begin{table}[t]
+\setlength{\abovecaptionskip}{0.1cm}
+  \caption{\textbf{Effect of different features and losses used in RPQ for SSD-memory hybrid scenario}}
+  \label{tab:ablation}
+  \renewcommand\arraystretch{1.3}
+  \begin{tabular}{c||c|c|c|c|c}
+    \hline
+    \textbf{Methods} & \textbf{BigANN} & \textbf{Deep} & \textbf{Gist} & \textbf{Sift} & \textbf{Ukbench}  \\
+    \hline
+    \hline
+    RPQ            & 250.17 & 193.13   & 251.98  & 264.12 & 104.3   \\
+    \hline 
+    RPQ w/ N       & 231.00 & 174.02   & 228.42  & 250.41 & 101.92   \\
+    \hline 
+    RPQ w/ R       & 101.23 & 92.31    & 149.50  & 110.67 & 57.71   \\
+    \hline 
+    RPQ w/ L2R     & 80.21  & 77.41    & 70.14   & 92.37  & 56.36  \\
+    \hline 
+\end{tabular}
+\end{table}
+
+\begin{table}[t]
+\setlength{\abovecaptionskip}{0.1cm}
+  \caption{\textbf{Effect of different features and losses used in RPQ for in memory scenario}}
+  \label{tab:ablation2}
+  \renewcommand\arraystretch{1.3}
+  \begin{tabular}{c||c|c|c|c|c}
+    \hline
+    \textbf{Methods} & \textbf{BigANN} & \textbf{Deep} & \textbf{Gist} & \textbf{Sift} & \textbf{Ukbench}  \\
+    \hline
+    \hline
+    RPQ            & 5347.59 & 2906.97   & 7352.94  & 833.33 & 769.23   \\
+    \hline 
+    RPQ w/ N       & 5229.17 & 2517.59   & 6995.29  & 823.67 & 754.40   \\
+    \hline 
+    RPQ w/ R       & 3309.41 & 1827.36   & 4237.15  & 552.31 & 410.36   \\
+    \hline 
+    RPQ w/ L2R     & 3057.22 & 1554.09   & 3784.90  & 506.97 & 380.25  \\
+    \hline 
+\end{tabular}
+\end{table}
+
+\vspace{0.1cm}
+\noindent\textbf{Training time and mode size.} We provided the training time (in hours) and the model size (in MB) of our RPQ and another leaning-based Catalyst over all datasets in Table \ref{tab:traincost} and Table \ref{tab:modelsize}. From the reported results, ours consumes a little more training time than Catalyst because we consider more features w.r.t. graph-based ANNS than Catalyst. Fortunately, we traded a small amount of additional overhead for better effectiveness and efficiency than Catalyst. Besides, for both two methods, the storage overhead for maintaining model is modest.
+
+%\vspace{-0.1cm}
+\subsection{Ablation Analysis} \label{sec:ablation}
+\noindent\textbf{SSD-memory hybrid scenario.} We show the effects of different features and losses used in RPQ on ANNS's performance with following configurations: (1) RPQ with only neighborhood features and loss (RPQ w/ N), (2) RPQ with only routing features and loss (RPQ w/ R), (3) RPQ with two features and losses (RPQ), and (4) RPQ with L2R \cite{baranchuk2019learning} (RPQ w/ L2R). Table \ref{tab:ablation} shows the QPS results obtained at the same Recall@10 as 95\% for all datasets.  Note that, (3) performs the best and ours (1)-(3) are better than (4), this proves that our solution that considers both the neighborhood and routing features are necessary for achieving a good performance for PQ-integrated graph-based ANNS.
+
+\begin{figure}[t]
+\setlength{\abovecaptionskip}{0.1cm}
+\centering
+\includegraphics[width=85mm]{pic/fig8.pdf}
+\caption{Effect of $k_{\rm pos}$/$k_{\rm neg}$}\label{fig:sample}
+% \vspace{-0.4cm}
+\end{figure}
+
+\noindent\textbf{In memory scenario.} As mentioned in Table \ref{tab:ablation2}, we also present the effects of different features and losses used in RPQ for in-memory scenario. Different with SSD-memory hybird scenario, we adopt the different evaluation standard for five datasets. For BigANN and DEEP, we use the QPS results obtained at the Recall@10 as 75\%. For SIFT, GIST and Ukbench, we use the QPS results obtained at the Recall@10 as 70\%, 80\% and 45\% respectively. Obviously, (3) also performs the best performance, this proves our solution can achieve a good performance for not only SSD-memory hybird scenario but also in memory scenario.
+
+\vspace{-0.1cm}
+\subsection{Parameter Sensitivity} \label{sec:parameter}
+\noindent\underline{Effect of $k_{\rm pos}$ and $k_{\rm neg}$.} Since the proportion of positive and negative samples is critical for contrastive learning \cite{zhan2021optimizing}, we show the effect of $k_{\rm pos}/k_{\rm neg}$ on ANNS's performance over different datasets in Figure \ref{fig:sample} (using the QPS results achieved for the same Recall@10 as 95\%). A good QPS can be obtained when $k_{\rm pos}/k_{\rm neg}$ is configured in the range of [0.2,0.5].
+
+\vspace{0.1cm}
+\noindent\underline{Effect of $K$ and $M$.} We study the effect of $K$ and $M$ on ANNS's performance in Figure \ref{fig:k}, each value in a grid is a QPS obtained at the same Recall@10 as 95\% given a specific pair of $K$ and $M$. The larger the $K$ and $M$, the more the QPS we achieve. This can be explained that the larger the $K$, the more the codewords in a codebook, resulting in a more accurate PQ distance to a query. So, the routing process would converge quickly and lead to a larger QPS. Similarly, the larger the $M$, the more sub-vectors we have, so that the coding space is larger, making the PQ distance more accurate. For in memory scenario, we present the upper limit of Recall@10 in Figure \ref{fig:k2}, similar to SSD-memory hybrid scenario, the larget the K and M, the more the Recall@10 we can achieve.
+
+\begin{figure}[t]
+\setlength{\abovecaptionskip}{0.1cm}
+\centering
+\includegraphics[width=85mm]{pic/fig9.pdf}
+\caption{Effect of $K$ and $M$ for SSD-memory hybrid scenario}\label{fig:k}
+\end{figure}
+
+\begin{figure}[t]
+\setlength{\abovecaptionskip}{0.1cm}
+\centering
+\includegraphics[width=85mm]{pic/fig92.pdf}
+\caption{Effect of $K$ and $M$ for in memory scenario}\label{fig:k2}
+\end{figure}
+
+\begin{figure}[h]
+\centering
+%\vspace{-0.4cm}
+\includegraphics[width=80mm]{pic/fig10.pdf}
+\caption{Scalability analysis on data scales for SSD-memory hybrid scenario}\label{fig:scale}
+%\vspace{-0.2cm}
+\end{figure}
+
+\begin{figure}[h]
+\centering
+%\vspace{-0.4cm}
+\includegraphics[width=80mm]{pic/fig103.pdf}
+\caption{Scalability analysis on data scales for in memory scenario}\label{fig:scale2}
+%\vspace{-0.2cm}
+\end{figure}
+
+\vspace{-0.1cm}
+\subsection{Scalability Analysis} \label{sec:scalability}
+\noindent\textbf{SSD-memory hybrid scenario.} We show the scalability of various methods on different scales of BigANN and Deep datasets that varies from 1M to 1B. Each data point in Figure \ref{fig:scale} represents the QPS achieved at the same Recall@10 as 95\%. We found that our method outperforms others, showing a better scalability on scales.
+
+\noindent\textbf{In memory scenario.} We present the scalability of HNSW-PQ and HNSW-RPQ on different scales of BigANN and Deep datasets that varies from 1M to 100M. Different with SSD-memory hybrid scenario, we represent the QPS achieved with various Recall@10 (denoted above the bar). We found that our method also outperforms others in memory scenario.
+
+
+\section{Related Work} \label{sec:related}
+
+We review some of the fundamental techniques related to our study. We first briefly overview several compression methods. Then, we list recent efforts in index-aware compression.
+
+\subsection{Vector encoding methods}
+
+% As very large datasets of high-dimensional vectors proliferate, ANNS rely on lossy compression or hashing schemes. A crucial requirement for these schemes is the ability to evaluate distances and scalar products between compressed and uncompressed vectors efficiently and without explicit decompression. 
+Common  methods for high-dimentional compression mostly fall into two separate lines of research, binary and quantization methods. At the moment, systems that rely on the quantization compression are often preferred to hashing approaches due to a more favourable accuracy. Recent studies summing or concatenating codewords from several different codebooks and achieve advanced compression. Among them, PQ \cite{jegou2010product} is more simple and fast, which have been widespread adopted among high-tech companies nowadays. However, PQ implicitly relies on the limited amount of correlation between the dimension groups. To reduce the quantization distortions in PQ, some studies searched for the optimal decomposition to learn codebooks. OPQ \cite{ge2013optimized} improves PQ by finding better subspace partitioning and achieves a better search performance. However, these methods are not specifically designed for graphs and do not take into account the important routing processes in neighboring graphs. These routing information are considered important in multiple literature \cite{baranchuk2019learning, peng2022lan}.
+
+
+\subsection{Index-aware compression}
+
+The literature on index-aware compression is most relevant to our work, which can be traced back to this ground-breaking paper, which design and train a neural network that favor adapting quantizers to the index. Since then, index-aware compression approaches have attracted wide interests and shown exciting results, with plenty of ingeniously designed algorithms being developed. Among them, following the state-of-the-art PG, many studies try to adapt the encoders to the PG index. Same as the methods we talk above, URPH \cite{karaman2019unsupervised} propose an unsupervised hashing method, exploiting a shallow neural network, that aims to maintaining the effective search performance of HNSW by preserve the ranking induced by an original real-valued representation. CNT \cite{zhang2022connecting} proposed method consists of a compression network with transformer (CNT) which combines traditional projection function and transformer model, and an inhomogeneous neighborhood relationship preserving (INRP) loss which is aligned with the characteristic of ANNS. Link\&Code encode the index vectors using optimized product quantization and exploit the graph structure to refine the similarity estimation. It learns a regression codebook by alternate optimization to minimize the reconstruction error, which providing high precision with a small set of comparisons.
+
+% Besides that, recently methods try to consider the graph structure into compression process. Link\&Code encode the index vectors using optimized product quantization and exploit the graph structure to refine the similarity estimation. It learns a regression codebook by alternate optimization to minimize the reconstruction error, which providing high precision with a relatively small set of comparisons. HVS adopt the hierarchical structure same as HNSW, which divided subspace divisions in a coarse-to-fine manner. 
+
+% Learning2Index ranks clusters based on their nearest neighbor probabilities rather than the query-centroid distances. The nearest neighbor probabilities are estimated by employing neural networks to characterize the neighborhood relationships, i.e., the density function of nearest neighbors with respect to the query. The proposed probability-based ranking can replace the conventional distance-based ranking for finding candidate clusters, and the predicted probability can be used to determine the data quantity to be retrieved from the candidate cluster. 
+
+
+
+% \begin{figure}
+% \includegraphics[width=40mm]{pic/fig7.png}
+% \caption{Overview of neural vector encoding pipeline of graph-based methods.}\label{fig:6}
+% \end{figure}
+
+\section{Conclusion} \label{sec:conclusion}
+
+We studied the product quantization methods for graph-based approximate nearest neighbor search by considering the routing features. We first propose a general routing-guided PQ framework. Moreover, by using the RPQ framework, we next presented a differentiable quantizer which composed by adaptive vector decomposition and differentiable quantization. Besides, we extract the routing features as well as the neighborhood features using a sampling-based method. Finally, we take above neighborhood and routing features to train the differentiable quantizer, thus making the quantizer more adaptive to graph-based ANNS methods. Experimental results on real-world dataset confirmed the effectiveness and efficiency of our approach.
+
+
+\section*{Acknowledgment}
+This work was supported by the Primary R\&D Plan of Zhejiang (2021C03156 and 2023C03198) and the National NSF of China (62072149).
+
+%\clearpage
+
+\bibliographystyle{ACM-Reference-Format}
+\bibliography{ref}
+
+\end{document}
+\endinput

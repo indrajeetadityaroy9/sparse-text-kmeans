@@ -1,0 +1,974 @@
+\documentclass[10pt]{article} % For LaTeX2e
+% \usepackage{tmlr}
+% If accepted, instead use the following line for the camera-ready submission:
+%\usepackage[accepted]{tmlr}
+% To de-anonymize and remove mentions to TMLR (for example for posting to preprint servers), instead use the following:
+\usepackage[preprint]{tmlr}
+
+
+\usepackage[colorlinks=true]{hyperref}
+\usepackage{url}
+
+\usepackage{tepper}
+\usepackage{siunitx}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{multicol}
+\usepackage{enumitem}
+\usepackage{rotating}
+\usepackage{algorithm}
+\usepackage{colortbl}
+\usepackage{xcolor}
+\usepackage{subfig}
+%\usepackage{breqn}
+
+
+\title{LeanVec: Searching vectors faster by making them fit}
+
+% Authors must not appear in the submitted version. They should be hidden
+% as long as the tmlr package is used without the [accepted] or [preprint] options.
+% Non-anonymous submissions will be rejected without review.
+
+\author{%
+    \name Mariano Tepper\thanks{Equal contribution} \email mariano.tepper@intel.com \\
+    \name Ishwar Singh Bhati\footnotemark[1] \email ishwar.s.bhati@intel.com \\
+    \name Cecilia Aguerrebere \email cecilia.aguerrebere@intel.com\\
+    \name Mark Hildebrand \email mark.hildebrand@intel.com\\
+    \name Ted Willke \email ted.willke@intel.com\\
+    \addr Intel Labs\\
+}
+
+% The \author macro works with any number of authors. Use \AND 
+% to separate the names and addresses of multiple authors.
+
+\newcommand{\fix}{\marginpar{FIX}}
+\newcommand{\new}{\marginpar{NEW}}
+
+\def\month{MM}  % Insert correct month for camera-ready version
+\def\year{YYYY} % Insert correct year for camera-ready version
+\def\openreview{\url{https://openreview.net/forum?id=XXXX}} % Insert correct link to OpenReview for camera-ready version
+
+%\input{commands.tex}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+Modern deep learning models have the ability to generate high-dimensional vectors whose similarity reflects semantic resemblance.
+Thus, similarity search, i.e., the operation of retrieving those vectors in a large collection that are similar to a given query, has become a critical component of a wide range of applications that demand highly accurate and timely answers. In this setting, the high vector dimensionality puts similarity search systems under compute and memory pressure, leading to subpar performance.
+Additionally, cross-modal retrieval tasks have become increasingly common, e.g., where a user inputs a text query to find the most relevant images for that query. However, these queries often have different distributions than the database embeddings, making it challenging to achieve high accuracy.
+In this work, we present LeanVec, a framework that combines linear dimensionality reduction with vector quantization to accelerate similarity search on high-dimensional vectors while maintaining accuracy.
+We present LeanVec variants for in-distribution (ID) and out-of-distribution (OOD) queries. LeanVec-ID yields accuracies on par with those from recently introduced deep learning alternatives whose computational overhead precludes their usage in practice. LeanVec-OOD uses two novel techniques for dimensionality reduction that consider the query and database distributions to simultaneously boost the accuracy and the performance of the framework even further (even presenting competitive results when the query and database distributions match). All in all, our extensive and varied experimental results show that LeanVec produces state-of-the-art results, with up to 3.7x improvement in search throughput and up to 4.9x faster index build time over the state of the art.
+\end{abstract}
+
+\section{INTRODUCTION}
+\label{sec:introduction}
+
+High-dimensional embedding vectors, stemming from deep learning models, have become the quintessential data representation for unstructured data, e.g., for images, audio, video, text, genomics, and computer code \cite[e.g.,][]{devlin2018bert,radford2021learning,shvetsova2022everything,ji2021dnabert,li2022competition}. The power of these representations comes from translating semantic affinities into spatial similarities between the corresponding vectors. Thus, searching over massive collections of vectors for the nearest neighbors to a given query vector yields semantically relevant results, enabling a wide range of applications \citep[e.g.,][]{blattmann2022retrieval,borgeaud2022improving,karpukhin2020dense,lian2020lightrec,grbovic2016scalable}.
+
+Among other similarity search approaches, graph-based methods \citep[e.g.,][]{arya1993approximate,malkov2018efficient,jayaram2019diskann} stand out with their high accuracy and performance for high-dimensional data~\cite{wang_graph_survey_2021}.
+Here, the index consists of a directed graph, where each vertex corresponds to a dataset vector and edges represent neighbor-relationships between vectors so that the graph can be efficiently traversed to find the nearest neighbors in sub-linear time \citep{fu_fast_2019}.
+
+\citet{aguerrebere2023similarity} have recently shown that, when properly implemented, graph search is bottlenecked by the memory bandwidth of the system, which is mainly consumed by fetching database vectors from memory in a random access pattern (due to the complexity in globally ordering high-dimensional vectors and to the way any graph traversal works, i.e., hoping from one node to the other). Mainstream state-of-the-art vector quantization techniques  are either specifically designed for a sequential access pattern \citep{andre2021quicker_adc,guo2020accelerating}, rendering them not suitable for graph search, or incur more expensive similarity calculations by increasing the number of memory accesses \citep{jegou2010product} (more details in \cref{sec:background}).
+To reduce these access times, \citet{aguerrebere2023similarity} introduce a lightweight method, Locally-adaptive Vector Quantization (LVQ), that greatly accelerates the search and leads to state-of-the-art performance. Although LVQ removes the memory bottleneck in vectors of moderate dimensionality ($D \approx 128$), we observe increased memory bandwidth and computational pressure for higher dimensional (e.g., $D=512,768$) deep learning embedding vectors. Higher memory utilization drastically increases the memory latency \citep{Srinivasan2009cmp} to access each vector and results in suboptimal search performance. Even masterful placement of prefetching instructions in the software cannot hide the increased latency. These difficulties extend to the time-consuming procedure of constructing a graph-based index as construction speed is proportional to search speed. In a world where both academic and industrial deployments of similarity search overwhelmingly use deep learning embedding vectors, it is paramount to address this performance gap.
+
+\begin{figure}[t]
+    \centering
+    \begin{minipage}{0.40\textwidth}
+    \subfloat[]{%
+        \includegraphics[width=\linewidth]{figures/sensitivity_rqa_qps_bandwidth.pdf}%
+        \label{fig:rqa_qps_bandwidth}%
+    }%
+    \end{minipage}
+    \hfill%
+    \begin{minipage}{0.58\textwidth}
+    \subfloat[]{%
+        \includegraphics[width=\linewidth]{figures/LeanVec.pdf}%
+        \label{fig:lean_vec_framework}%
+    }%
+    \end{minipage}%
+    
+    \caption{We propose LeanVec, a framework to accelerate similarity search for high-dimensional vectors, including those produced by deep learning models. LeanVec combines a novel linear dimensionality reduction method for in-distribution and out-of-distribution use cases with Locally-adaptive Vector Quantization (LVQ, \citet{aguerrebere2023similarity}) to achieve state-of-the-art performance and accuracy in graph-based index construction and search. \protect\subref{fig:rqa_qps_bandwidth} For high dimensional vectors (e.g., $D=768$), search performance scales with the level of memory compression. Compared to the FP16 encoding, LVQ8 and LVQ4x8 compress the vectors by 2x and \textasciitilde 4x for search, respectively, while LeanVec reduces the vector size by 9.6x (4.8x from dimensionality reduction and 2x from LVQ8). At 72 threads (our system has 36 physical cores and 72 threads), LeanVec provides a 8.5x performance gain over FP16 while consuming much less memory bandwidth (95 vs.~149GB/s).  \protect\subref{fig:lean_vec_framework} The main search in LeanVec returns nearest neighbor candidates and is executed efficiently using primary vectors, i.e., compressed with dimensionality reduction and vector quantization. The candidates are then re-ranked using secondary vectors, i.e., quantized with LVQ.}
+\end{figure}
+
+An additional difficulty with modern applications of similarity search is cross-modal querying, i.e., where a user uses a query from one modality to fetch similar elements from a different modality \citep{radford2021learning,yu2022coca,li2023blip}. For instance, in text2image applications, text queries are used to retrieve semantically similar images. Alternatively, sometimes queries and database vectors are produced by different models, e.g., in question-answering applications \citep{karpukhin2020dense}. In these cases, queries come from a statistical distribution different from the one underlying the database vectors, which makes applying vector compression techniques learned from the data itself a more challenging problem \citep{jaiswal2022ood}.
+
+In this work, we introduce \textbf{LeanVec}, a framework that combines linear dimensionality reduction with Locally-adaptive Vector Quantization (LVQ) to accelerate similarity search for high-dimensional vectors, making it suitable for applications with deep learning embedding vectors. LeanVec is inscribed in the standard search-and-rerank paradigm popular in similarity search. We present LeanVec variants for the two main cases: in-distribution (ID) and out-of-distribution (OOD) queries. LeanVec's compression lowers the required memory bandwidth and provides a proportional increase in search throughput. On the rqa-768-1M dataset (refer to \cref{table:datasets} for details), LeanVec compresses vectors by 9.6x (4.8x from the dimensionality reduction and 2x from LVQ) over the baseline of FP16 vectors and provides a 8.5x performance gain while consuming much less memory bandwidth (see \cref{fig:rqa_qps_bandwidth}). The performance gain increases even further as the dimensionality increases. For instance, in the standard gist-960-1M dataset, LeanVec shows \textasciitilde12x improvement over the uncompressed FP16 vectors (see \cref{fig:gist_qps_bandwidth} in the appendix).
+We present the following contributions:
+\begin{itemize}[topsep=0ex,itemsep=0ex,leftmargin=3ex]
+    \item We show that linear dimensionality reduction can be effectively used on-the-fly to increase the performance of graph-based similarity search, with no degradation in quality, and leads to state of the art results for high-dimensional vectors, including those produced by deep learning models.
+    \item We show that LeanVec can be used to build high-quality graph indices in a fraction of the time required for the original vectors, yielding up to a 8.6x runtime improvement. %\textcolor{red}{CHECK NUMBERS}
+    \item For the ID case, LeanVec-ID improves upon previous work using principal component analysis (PCA) \citep{jegou_aggregating_2010,gong2012iterative,babenko2014inverted,wei_projected_2014} by combining it with LVQ, bringing search speedups of up to 3.6x over the state of the art. LeanVec-ID does not make any assumptions about the statistical distribution of the query vectors.
+    \item For the OOD case, we present a new linear dimensionality reduction technique, LeanVec-OOD, that finds the optimal projection subspaces for the dataset and a representative query set to reduce the errors in the similarity computations. We present two lightweight and fast optimization algorithms for LeanVec-OOD. We present a detailed convergence analysis for one of these variants (based on a non-convex Frank-Wolfe algorithm). We show that LeanVec-OOD performs as good as LeanVec-ID in the ID case and is vastly superior in the OOD case.
+    \item For reproducibility, we will contribute the LeanVec implementation to Scalable Vector Search, an open source library for high-performance similarity search.\footnote{\url{https://github.com/IntelLabs/ScalableVectorSearch}}
+    We also introduce and will open-source two new datasets with different types of OOD characteristics.\footnote{\url{https://github.com/IntelLabs/VectorSearchDatasets}}
+\end{itemize}
+
+The remainder of this work is organized as follows. 
+We introduce LeanVec in \cref{sec:leanvec}, covering the overall framework and the novel techniques for OOD dimensionality reduction. We then present in \cref{sec:results} extensive experimental results comparing LeanVec to its alternatives and showing its superiority across all relevant metrics. In \cref{sec:background} we review the existing literature and its relation to our work. We provide a few concluding remarks in \cref{sec:conclusion}.
+
+\section{LeanVec: a framework to accelerate similarity search for high-dimensional vectors}
+\label{sec:leanvec}
+
+\textbf{Notation.} We denote vectors/matrices by lowercase/uppercase bold letters, e.g., $\vect{v} \in \Real^{n}$ and $\vect{A} \in \Real^{m \times n}$.
+
+
+We start from a set of database vectors $\set{X} = \left\{ \vect{x}_i \in \Real^D \right\}_{i=1}^n$ to be indexed and searched.
+We use maximum inner product as the similarity search metric, where one seeks to retrieve for a query $\vect{q}$ the $k$ database vectors with the highest inner product with the query, i.e., a set $\set{N}$ such that
+$\set{N} \subseteq \set{X}$, $|\set{N}| = k$, and $(\forall \vect{x}_k \in \set{N}, \forall \vect{x}_i \in \set{X} \setminus \set{N}) \ \langle \vect{q}, \vect{x}_k \rangle \geq \langle \vect{q}, \vect{x}_i \rangle$.
+Although maximum inner product is the most popular choice for deep learning vectors, this choice comes without loss of generality as the common cosine similarity and Euclidean distance we can be trivially mapped to this scenario by normalizing the vectors.
+
+LeanVec accelerates similarity search for deep learning embedding vectors by using the approximation
+\begin{equation}
+    \langle \vect{q}, \vect{x} \rangle \approx \langle \mat{A} \vect{q}, \operatorname{quant}(\mat{B} \vect{x}) \rangle ,
+\end{equation}
+where $\mat{A}, \mat{B} \in \Real^{d \times D}$ are orthonormal projection matrices, $d < D$, and $\operatorname{quant(\vect{v})}$ is a method to quantize each dimension in $\vect{v}$. The projection matrices reduce the number of entries of the database vectors and the quantization reduces the number of bits per entry. The reduced memory footprint decreases the time it takes to fetch each vector from memory. Furthermore, the lower dimensionality alleviates the algorithm's computational effort (i.e., requiring fewer fused multiply-add operations).  This approximation enables efficient inner product calculations with individual database vectors (no batch-processing required), which makes it ideal for the random memory-access pattern encountered in graph search.
+
+For the quantization step, we use Locally-adaptive Vector Quantization (LVQ), recently introduced by \citet{aguerrebere2023similarity}, as it is specifically designed to perform encoding/decoding with great efficiency, while incurring negligible search accuracy penalties.
+
+The LeanVec framework is schematically depicted in \cref{fig:lean_vec_framework} and its constituents are described next.
+The computation of the projection matrices will be presented in \cref{sec:pca,sec:alignment,sec:leanvec_FW,sec:leanvec_eig_search}.
+In the following, we refer to the set $\{ \operatorname{quant}(\mat{B} \vect{x}_i) \,|\, \vect{x}_i \in \set{X} \}$ as \emph{primary vectors} and to the set $\{ \operatorname{quant}(\vect{x}_i) \,|\, \vect{x}_i \in \set{X} \}$ as \emph{secondary vectors}.
+
+\textbf{Search.} Here, the primary vectors are used for traversing the graph. We compensate for the errors in the inner-product approximation by retrieving a number of candidates greater than $k$. Then, we use the set of \emph{secondary vectors}, i.e., $\{ \operatorname{quant}(\vect{x}_i) \,|\, \vect{x}_i \in \set{X} \}$, to re-compute the inner products for those candidates and to return the top-$k$. The dimensionality reduction for the query, i.e., the multiplication $\mat{A} \vect{q}$, is done only once per search incurring a negligible overhead in the overall runtime.
+
+\textbf{Graph construction.}
+Only the primary vectors are used for graph construction. The secondary vectors are not used at this stage. \citet{aguerrebere2023similarity} had already analyzed the robustness of the graph construction to quantization with LVQ. Notably, our experimental results show that the robustness extends to a dimensionality reduction as well.
+It is important to note that searches are an essential part of the graph construction process \citep{malkov2018efficient,fu_fast_2019}. As such, our achieved search acceleration directly translates into graph construction acceleration, as shown in our experimental results. See \cref{sec:graph_construction} for a discussion on graph construction and its acceleration.
+
+LeanVec does not use dimensionality reduction to decrease the memory footprint of the similarity search index, but to accelerate its performance. LeanVec, in its current form, effectively increases the total footprint by keeping both primary and secondary vectors in memory. Without loss of generality and in pursuit of a reduced footprint, we could only store to $D-d$ dimensions for the secondary vectors (see the discussion in \cref{sec:pca}) which would remove the current overhead. Alternatively, other encodings \citep[e.g.,][]{douze2018link} can be used for the secondary vectors.
+
+
+\subsection{Dimensionality reduction for in-distribution similarity search}
+\label{sec:pca}
+
+Let us begin with a few standard definitions.
+The Stiefel manifold is the set of row-orthonormal matrices, formally defined as
+$\operatorname{St} (D, d) = \{ \mat{U} \in \Real^{d \times D} \,|\, \mat{U} \transpose{\mat{U}} = \mat{I} \}$.
+Let $\norm{\bullet}{\text{op}}$ denote the standard spectral norm, defined as $\norm{\mat{A}}{\text{op}} = \sup \left\{ \norm{\mat{A}\vect{v}}{2} / \norm{\vect{v}}{2} \,|\, \vect{v} \in \Real^{D} , \vect{v} \neq \vect{0} \right\}$.
+The convex hull $\set{C}$ of all row-orthonormal matrices in $\operatorname{St} (D, d)$ is the unit-norm ball of the spectral norm, i.e.,
+\begin{equation}
+    \set{C} = \{ \mat{A} \,|\, \norm{\mat{A}}{\text{op}} \leq 1 \} .
+    \label[equation]{eq:stiefel_convex_hull}
+\end{equation}
+
+
+In the in-distribution (ID) case, we compute the projection matrices from the set of database vectors $\set{X} = \left\{ \vect{x}_i \in \Real^D \right\}_{i=1}^n$.
+Let $d < D$. We use a matrix $\mat{M} \in \Real^{d \times D}$ to obtain the low-dimensional representation
+\begin{equation}
+    \vect{x}_i = \transpose{\mat{M}} \mat{M} \vect{x}_i + \vect{e}_i ,
+    \label[equation]{eq:pca}
+\end{equation}
+where $\vect{e}_i = (\mat{I} - \transpose{\mat{M}} \mat{M}) \vect{x}_i$ is the representation error. A desirable characteristic for $\mat{M}$ would be to define a $d$-dimensional orthogonal subspace of $\Real^D$, i.e., $\mat{M} \transpose{\mat{M}} = \mat{I}$. Notice that $\vect{e}_i$ can be represented losslessly using $D - d$ dimensions.
+Commonly, one would seek to find the matrix $\mat{M}$ that minimizes the errors $\vect{e}_i$ by solving
+\begin{equation}
+    \min_{\mat{M} \in \operatorname{St} (D, d)} \norm{\mat{X} - \transpose{\mat{M}} \mat{M} \mat{X}}{F}^2 ,
+    \label[problem]{prob:pca}
+\end{equation}
+where the matrix $\mat{X} \in \Real^{D \times n}$ is obtained by horizontally stacking the database vectors.
+This is the traditional Principal Component Analysis (PCA) problem, whose solution is given by keeping the $d$ left singular vectors of $\mat{X}$ that correspond to the singular values with larger magnitudes.
+
+With our representation, we approximate $\langle \vect{q}, \vect{x}_i \rangle \approx \langle \vect{q}, \transpose{\mat{M}} \mat{M} \vect{x}_i \rangle = \langle \mat{M} \vect{q}, \mat{M} \vect{x}_i \rangle$ and thus $\mat{A} = \mat{B} = \mat{M}$.
+
+\subsection{Query-aware dimensionality reduction for out-of-distribution similarity search}
+\label{sec:alignment}
+
+From the ID approximation in \cref{eq:pca}, we get
+\begin{equation}
+    \langle \vect{q}, \vect{x}_i \rangle - \langle \mat{M} \vect{q}, \mat{M} \vect{x}_i \rangle = \langle \vect{q}, \vect{e}_i \rangle .
+\end{equation}
+
+The smaller the magnitude of $\langle \vect{q}, \vect{e}_i \rangle$ is, the more accurate the approximation becomes. Observe, however, that \cref{prob:pca} can only produce guarantees about $\langle \vect{q}, \vect{e}_i \rangle$ when the queries and the database vectors are identically distributed.
+To address this problem, given database vectors $\set{X} = \left\{ \vect{x}_i \in \Real^D \right\}_{i=1}^n$ and query vectors $\set{Q} = \left\{ \vect{x}_j \in \Real^D \right\}_{j=1}^m$, we propose to minimize the magnitude of $\langle \vect{q}_j, \vect{e}_i \rangle$ directly.
+
+Thus, given a representative set of query vectors $\set{Q} = \left\{ \vect{q}_j \in \Real^D \right\}_{j=1}^m$, we propose the alternative model
+\begin{equation}
+    \vect{x}_i = \transpose{\mat{A}} \mat{B} \vect{x}_i + \vect{\varepsilon}_i ,
+\end{equation}
+where $\vect{\varepsilon}_i = (\mat{I} - \transpose{\mat{A}} \mat{B}) \vect{x}_i$ is the new representation error.
+We can now minimize $\langle \vect{q}_j, \vect{\varepsilon}_i \rangle^2$ for all $i, j$, yielding the main optimization problem of this work,
+\begin{equation}
+    \min_{\mat{A}, \mat{B} \in \operatorname{St} (D, d)} \norm{\transpose{\mat{Q}} \transpose{\mat{A}} \mat{B} \mat{X} - \transpose{\mat{Q}} \mat{X}}{F}^2 .
+    \label[problem]{prob:leanvec_orthonormal}
+\end{equation}
+where $\mat{X} \in \Real^{D \times n}$ and $\mat{Q} \in \Real^{D \times m}$ are obtained by horizontally stacking the database and query vectors, respectively.
+We refer to this dimensionality reduction model as \textbf{LeanVec-OOD}. We use LeanVec-OOD for similarity search with the approximation $\langle \vect{q}, \vect{x}_i \rangle \approx \langle \mat{A} \vect{q}, \mat{B} \vect{x}_i \rangle$, where the lower dimensionality alleviates the algorithm's computational burden (i.e., requiring fewer fused multiply-add operations) while simultaneously reducing memory bandwidth pressure and footprint.
+
+LeanVec-OOD allows suitable matrices for dimensionality reduction to be found and is specifically designed for the case where $\set{X}$ and $\set{Q}$ are not drawn from the same distribution. However, if $\set{X}$ and $\set{Q}$ are drawn from the same distribution, how does LeanVec compare to PCA? The following proposition addresses this question, showing that the LeanVec will perform similarly to PCA in the ID case (the proof is in \cref{sec:leanvec_svd_proof}).
+
+\begin{proposition}
+    \label[proposition]{theo:leanvec_svd}
+    \Cref{prob:leanvec_orthonormal} is upper bounded by the singular value decomposition of $\mat{X}$.
+\end{proposition}
+
+\Cref{theo:leanvec_svd} ensures that one can run LeanVec-OOD safely, without checking if the query and dataset sets are iso-distributed or not. Of course, LeanVec-OOD comes with the additional requirement of having a representative query set for training. Thankfully, this is not a ominous requirement as the standard calibration of the similarity search system (i.e., finding a suitable operating point in the accuracy-speed trade off for a given application) already requires having a suitable query set.
+
+Interestingly, for the searches performed as part of the graph construction process, database vectors are used as queries implying that, even for OOD use cases, the construction algorithm works with ID data. \cref{theo:leanvec_svd} ensures that graph construction can be executed with LeanVec-OOD.
+
+\textbf{Efficiency.} Developing the squared Frobenius norm, we can equivalently write \cref{prob:leanvec_orthonormal} as 
+\begin{equation}
+    \min_{\mat{A}, \mat{B} \in \set{C}}
+    \traceone{
+        \mat{A} \mat{K}_{\mat{Q}} \transpose{\mat{A}} \mat{B} \mat{K}_{\mat{X}} \transpose{\mat{B}}
+        + \mat{K}_{\mat{Q}} \mat{K}_{\mat{X}}
+        -2 \mat{K}_{\mat{Q}} \transpose{\mat{A}} \mat{B} \mat{K}_{\mat{X}}
+    } ,
+    \quad\text{where}\quad
+    \mat{K}_{\mat{Q}} = \mat{Q} \transpose{\mat{Q}}
+    ,
+    \mat{K}_{\mat{X}} = \mat{X} \transpose{\mat{X}}
+    \label[problem]{prob:leanvec_efficient}
+\end{equation}
+Before solving this problem, we can precompute the $D \times D$ matrices $\mat{K}_{\mat{Q}}$ and $\mat{K}_{\mat{X}}$. This removes the optimization's dependency in the number of database and query vectors and enables dealing with large data and query sets with great efficiency. Additionally, relying on the second-order statistics $\mat{K}_{\mat{Q}}$ and $\mat{K}_{\mat{X}}$ prevents from overfitting the query training set. Moreover, the error between a sample covariance matrix and its expectation converges very quickly \citep{koltchinskii2017concentration} with a growing sample size.
+We can thus safely use uniform subsampling to compute $\mat{K}_{\mat{Q}}$ and $\mat{K}_{\mat{X}}$, as observed in \cref{fig:leanvec_sample_sizes,fig:leanvec_sample_comparison} of the appendix.
+We need a minimum of $D$ samples ($D$ query and $D$ database vectors) to ensure that these matrices are not artificially rank-deficient. Using $m=10^4$ queries and $n=10^5$ database vectors for training amounts to a 13x (20x) query oversampling for $D=512$ ($D=768$) over the minimum number of samples $D$.
+
+\subsection{Optimizing the LeanVec-OOD loss with a Frank-Wolfe algorithm}
+\label{sec:leanvec_FW}
+
+Optimizing \cref{prob:leanvec_orthonormal} is not trivial as it is a constrained optimization problem with a non-convex loss function. Additionally, its constraints are non-convex as the Stiefel manifold is a non-convex set.\footnote{Recently, \citet{ablin2023infeasible} proposed efficient optimization methods on the Stiefel manifold. We leave the study of this option as future work.}
+Here, in order to make the optimization of \cref{prob:leanvec_orthonormal} more amenable, we define the relaxed problem
+\begin{gather}
+    \min_{\mat{A}, \mat{B} \in \set{C}} f(\mat{A}, \mat{B}) ,
+    \label[problem]{prob:leanvec}
+    \\
+    \text{where}\quad
+    f(\mat{A}, \mat{B}) = \norm{\transpose{\mat{Q}} \transpose{\mat{A}} \mat{B} \mat{X} - \transpose{\mat{Q}} \mat{X}}{F}^2 .
+    \label[equation]{eq:leanvec_loss}
+\end{gather}
+Here, we replace the non-convex constraints involving the Stiefel manifold by convex constraints involving its convex hull, \cref{eq:stiefel_convex_hull}.
+Now, \cref{prob:leanvec} is convex and has a smooth loss function on $\mat{A}$ for a fixed $\mat{B}$ and vice versa. Not only that, but, as we will see next, these convex problems can be solved efficiently. We can thus recur to a block coordinate descent (BCD) method, iteratively fixing one of the variables and updating the other one.
+
+For these subproblems, we use the Frank-Wolfe algorithm (a.k.a. conditional gradient), a classical optimizer for solving a problem with a convex and continuously differentiable loss function $f$ where the variable belongs to a convex set $\set{D}$ \citep{frank1956algorithm}.
+Given an initial solution $\vect{y}^{(0)} \in \set{D}$, the optimization procedure is given by the following iterations for $t = 0, \dots, T$,
+\begin{align}
+        \vect{s} &\gets \argmax_{\vect{s} \in \set{D}} \langle \vect{s}, -\nabla f(\vect{y}^{(t)}) \rangle
+        \label[equation]{algo:frank_wolfe_gradient}
+        \\
+        \vect{y}^{(t+1)} &\gets (1 - \gamma) \vect{y}^{(t)} + \gamma \vect{s} .
+        \label[equation]{algo:frank_wolfe_update}
+\end{align}
+
+\Cref{algo:frank_wolfe_gradient} computes the direction in $\set{D}$ that yields the steepest descent, i.e., the one more aligned with $-\nabla f(\vect{y}^{(t)})$. The update in \cref{algo:frank_wolfe_update} guarantees that the iterates remain in $\set{D}$ by using a convex combination of elements in $\set{D}$.
+
+The function $f$ in \cref{eq:leanvec_loss} has continuous partial derivatives given by ($\mat{K}_{\mat{Q}} , \mat{K}_{\mat{X}}$ defined in \cref{prob:leanvec_efficient})
+\begin{align}
+    \tfrac{\partial}{\partial{\mat{A}}} f(\mat{A}, \mat{B}) &= 2 \mat{B} \mat{K}_{\mat{X}} \transpose{\mat{B}} \mat{A} \mat{K}_{\mat{Q}} - 2 \mat{B} \mat{K}_{\mat{X}} \mat{K}_{\mat{Q}} ,
+    \quad\text{and}\quad
+    \tfrac{\partial}{\partial{\mat{B}}} f(\mat{A}, \mat{B}) &= 2 \mat{A} \mat{K}_{\mat{Q}} \transpose{\mat{A}} \mat{B} \mat{K}_{\mat{X}} - 2 \mat{A} \mat{K}_{\mat{Q}} \mat{K}_{\mat{X}} .
+    \label[equation]{eq:leanvec_gradients}
+\end{align}
+
+\begin{figure}
+
+    \begin{minipage}{0.54\textwidth}
+        \setlength{\algomargin}{1em}
+        \SetKwComment{Comment}{$\triangleright$\,}{}
+        
+        \begin{algorithm2e}[H]
+            \caption{Frank-Wolfe BCD optimization for \cref{prob:leanvec} with factor $\alpha \in (0, 1)$.}
+            \label[algorithm]{algo:leanvec}
+            
+            Let $\mat{A}^{(0)}, \mat{B}^{(0)} \in \set{C}$, e.g., $\mat{A}^{(0)} \gets \mat{0}$ and $\mat{B}^{(0)} \gets \mat{0}$\;
+            \For{$t = 0, \dots, T$}{
+                % $\gamma \gets 2 / (t + 2)$\;
+                    $\gamma \gets 1 / (t + 1)^{\alpha}$\;
+            
+                $\displaystyle \mat{S}^{(t)}_{\mat{A}} \gets \argmax_{\mat{S} \in \set{C}} \langle \mat{S}, -\tfrac{\partial}{\partial{\mat{A}}} f(\mat{A}^{(t)}, \mat{B}^{(t)}) \rangle$%
+                \Comment*[l]{\begin{footnotesize}Eq.\,(\ref{eq:leanvec_gradients})\end{footnotesize}}
+                $\mat{A}^{(t+1)} \gets (1 - \gamma) \mat{A}^{(t)} + \gamma \mat{S}^{(t)}_{\mat{A}}$\;
+                $\displaystyle \mat{S}^{(t)}_{\mat{B}} \gets \argmax_{\mat{S} \in \set{C}} \langle \mat{S}, -\tfrac{\partial}{\partial{\mat{B}}} f(\mat{A}^{(t+1)}, \mat{B}^{(t)}) \rangle$%
+                \Comment*[l]{\begin{footnotesize}Eq.\,(\ref{eq:leanvec_gradients})\end{footnotesize}}
+                $\mat{B}^{(t+1)} \gets (1 - \gamma) \mat{B}^{(t)} + \gamma \mat{S}^{(t)}_{\mat{B}}$\;
+            }
+        \end{algorithm2e}
+    \end{minipage}%
+    \hfill%
+    \begin{minipage}{0.45\textwidth}
+        \begin{figure}[H]
+            \centering
+        
+            \includegraphics[width=0.95\linewidth]{figures/LeanVec-OOD_convergence_OpenImages.pdf}
+        
+            \caption{\Cref{algo:leanvec} converges in 51 iterations for open-images-512-1M with $D=512$ and $d=128$. The total runtime is 4 seconds, respectively. Relaxing the orthogonality constraint incurs a relatively small error of $10^{-3}$.}
+            \label{fig:leanvec_FW_convergence}
+        \end{figure}
+    \end{minipage}
+
+\end{figure}
+
+We now show that \cref{algo:frank_wolfe_gradient} has an efficient solution for our particular subproblems. We can write both updates as $\sup_{\norm{\mat{S}}{\text{op}} \leq 1} \langle \mat{S}, \mat{C} \rangle$, where $\langle \cdot, \cdot \rangle$ is the standard matrix inner product and $\mat{C} \in \Real^{d \times D}$ stands in either for the $d \times D$ gradient matrices $-\tfrac{\partial}{\partial{\mat{A}}} f(\mat{A}, \mat{B})$ or $-\tfrac{\partial}{\partial{\mat{B}}} f(\mat{A}, \mat{B})$.
+This linear problem has a solution given by $\mat{S} = \mat{U} \transpose{\mat{V}}$, where $\mat{U} \mat{\Sigma} \transpose{\mat{V}}= \mat{C}$ is the singular value decomposition of $\mat{C}$ \citep{jaggi2013revisiting}. This update is very efficient for large datasets by working on $d \times D$ matrices.
+
+Equipped with these tools, we can pose the complete optimization procedure in \cref{algo:leanvec}. There, we update $\mat{A}$ (resp.~$\mat{B}$) given a fixed $\mat{B}$ (resp.~$\mat{A}$) by running one Frank-Wolfe update. The factor $\alpha \in (0, 1)$, proposed by \citet{wai2017decentralized} for the step size $\gamma = 1 / (t + 1)^{\alpha}$, can be replaced by a line search to speed up the optimization. In our experiments we did not observe a need for such a performance tuning.
+In practice, we use early termination in \cref{algo:leanvec}, i.e., we stop the iterations whenever
+$\left| f \left( \mat{A}^{(t+1)}, \mat{B}^{(t+1)} \right) - f \left( \mat{A}^{(t)}, \mat{B}^{(t)} \right) \right| / f \left( \mat{A}^{(t)}, \mat{B}^{(t)} \right) \leq 10^{-3}$,
+yielding a fast runtime, see \cref{fig:leanvec_FW_convergence}.
+In \cref{sec:leanvec_FW_convergence}, we prove the convergence rate of \cref{algo:leanvec} to a stationary point of \cref{prob:leanvec}.
+
+
+\subsection{Optimizing the LeanVec-OOD loss with eigenvector search}
+\label{sec:leanvec_eig_search}
+
+In this section, we assume $\mat{A} = \mat{B}$. This assumption leads to a new optimization technique for the LeanVec-OOD loss.
+Given $\mat{P} = \mat{A} = \mat{B}$ and eliminating constant factors, \Cref{prob:leanvec_efficient} can be rewritten as
+\begin{equation}
+    \min_{\mat{P} \in \operatorname{St} (D, d)}
+    \traceone{
+        \mat{P} \mat{K}_{\mat{Q}} \transpose{\mat{P}} \mat{P} \mat{K}_{\mat{X}} \transpose{\mat{P}}
+        - 2 \mat{K}_{\mat{Q}} \transpose{\mat{P}} \mat{P} \mat{K}_{\mat{X}}
+    } .
+    \label[problem]{prob:leanvec_loss_same_proj}
+\end{equation}
+Here, we can see that it would be desirable to align $\mat{P}$ with both the $d$ leading eigenvectors of $\mat{K}_{\mat{Q}}$ and with those of $\mat{K}_{\mat{X}}$. An intuitive idea would be to set $\mat{P}$ using the $d$ leading eigenvectors of $\mat{K}_{\mat{Q}} + \mat{K}_{\mat{X}}$.
+
+However, the matrices $\mat{K}_{\mat{Q}}$ and $\mat{K}_{\mat{X}}$ are summations over two different numbers of samples (i.e., $n$ and $m$ are not necessarily equal). This asymmetry would artificially give more weight, for example, to $\mat{K}_{\mat{X}}$ if $n \gg m$.
+We compensate this imbalance by scaling the loss \cref{prob:leanvec_loss_same_proj} by the constant $\frac{1}{nm}$, obtaining
+\begin{equation}
+    \min_{\mat{P} \in \operatorname{St} (D, d)}
+    \traceone{
+        \mat{P} \left(\tfrac{1}{m} \mat{K}_{\mat{Q}} \right) \transpose{\mat{P}} \mat{P} \left( \tfrac{1}{n} \mat{K}_{\mat{X}} \right) \transpose{\mat{P}}
+        - 2 \left(\tfrac{1}{m} \mat{K}_{\mat{Q}} \right) \transpose{\mat{P}} \mat{P} \left( \tfrac{1}{n} \mat{K}_{\mat{X}} \right)
+    } .
+    \label[problem]{eq:leanvec_loss_same_proj_equalized}
+\end{equation}
+Now, we could set $\mat{P}$ to the $d$ leading eigenvectors of $\tfrac{1}{m} \mat{K}_{\mat{Q}} + \tfrac{1}{n} \mat{K}_{\mat{X}}$. Although an improvement, this equal weighting is not empirically optimal. We thus add a scalar factor $\beta \in \Real_+$ and examine the eigenvectors of
+\begin{equation}
+    \mat{K}_{\beta} = \tfrac{1 - \beta}{m} \mat{K}_{\mat{Q}} +  \tfrac{\beta}{n} \mat{K}_{\mat{X}} .
+\end{equation}
+Empirically, we observe in \cref{fig:leanvec_eigsearch} that the loss in \cref{eq:leanvec_loss_same_proj_equalized} is a smooth function of $\beta$ when $\mat{P} \in \Real^{d \times D}$ is formed by the $d$ leading eigenvectors of $\mat{K}_{\beta}$. Moreover, it has a unique minimizer. Our resulting optimization, summarized in \cref{algo:leanvec_eig_search}, uses a derivative-free scalar minimization technique \citep{brent2013algorithms} to find the value of $\beta$ that provides the optimum balance.
+
+\begin{figure}
+\begin{minipage}{0.4\textwidth}
+    \setlength{\algomargin}{1em}
+    \begin{algorithm2e}[H]
+        
+        \caption{Eigenvector search optimization for \cref{eq:leanvec_loss_same_proj_equalized}.}
+        \label[algorithm]{algo:leanvec_eig_search}
+    
+        \SetKwProg{myproc}{Procedure}{}{}
+        \SetKwFunction{projection}{projection}
+    
+        Find $\beta \in [0, 1]$ that minimizes the loss in \cref{prob:leanvec_loss_same_proj} with \mbox{$\mat{P} \gets$ \projection{$\beta$}}\;
+    
+        \myproc{\projection{$\beta$}}{
+            \Return the matrix $\mat{P} \in \operatorname{St} (D, d)$ formed by the $d$ eigenvectors of  $\mat{K}_{\beta} = \frac{1 - \beta}{m} \mat{K}_{\mat{Q}} +  \frac{\beta}{n} \mat{K}_{\mat{X}}$ with the largest eigenvalues, where $\mat{K}_{\mat{Q}} = \mat{Q} \transpose{\mat{Q}}$ and $\mat{K}_{\mat{X}} = \mat{X} \transpose{\mat{X}}$\;
+            
+        }
+    \end{algorithm2e}
+\end{minipage}%
+\hfill%
+\begin{minipage}{0.59\textwidth}
+    \begin{figure}[H]
+        \centering
+        \includegraphics[width=0.55\textwidth]{figures/search_leanvec_eig_joint_WIT-1M-OOD.pdf}%
+    
+        \caption{The loss in \cref{prob:leanvec_loss_same_proj} is a smooth function of $\beta$ when $\mat{P} = \operatorname{eigsearch}(\beta)$ and has a unique minimizer (different for each $d$). \Cref{algo:leanvec_eig_search} finds the minimum (marked with a circle) of this loss. Additional results in \cref{fig:leanvec_eigsearch_continued} of the appendix.}
+        \label{fig:leanvec_eigsearch}
+    \end{figure}
+\end{minipage}
+\end{figure}
+
+
+In the ID case, we have $\frac{1}{m} \mat{K}_{\mat{Q}} =  \frac{1}{n} \mat{K}_{\mat{X}}$ in expectation. The eigenvectors of $\mat{K}_{\beta}$ are invariant to the value of $\beta$. Hence, in this case, \cref{algo:leanvec_eig_search} offers a seamless fallback, becoming equivalent to \cref{prob:pca}.
+
+\Cref{algo:leanvec_eig_search} is highly efficient and achieves good local minima of the LeanVec-OOD loss but, so far, lacks theoretical guarantees. However, we can use \cref{algo:leanvec} to shed light on the quality of the solution $\mat{P}$ given by \Cref{algo:leanvec_eig_search}. If we set $\mat{A}^{(0)} \gets \mat{P}$ and $\mat{B}^{(0)} \gets \mat{P}$ in \cref{algo:leanvec}, \cref{algo:leanvec} converges in a handful of iterations, improving the loss by less than 2\% as observed in \cref{fig:algo_comparison} of the appendix (we use line search for the gradient step $\gamma$, to ensure that we stay within the same basin). We observe empirically that the theoretical guarantees of \cref{algo:leanvec} translate to the solutions of \Cref{algo:leanvec_eig_search} and posit that further theoretical analysis may help clarify its empirical performance. Lastly, we point out that both algorithms perform similarly in the end-to-end similarity search evaluation (see \cref{fig:algo_comparison} of the appendix).
+
+
+\section{Experimental results}
+\label{sec:results}
+
+
+We integrated the proposed LeanVec into the state-of-the-art Scalable Vector Search (SVS) library \citep{aguerrebere2023similarity} and now present its performance improvements over the state-of-the-art techniques and open-source libraries for graph search and construction. Diverse ablation studies show the impact of the different hyperparameters such as, for example, the target dimensionality $d$ and the quantization level. 
+
+
+\begin{table}[t]
+    \centering
+    \setlength\extrarowheight{2pt}
+    \caption{Evaluated datasets, where $n$ is the number of database vectors and $D$ their dimensionality. In all cases, we select the target dimensionality $d$ that yields maximum performance at 90\% accuracy (10-recall@10). The datasets are originally encoded using 32-bits floating-point values. We use separate learning and test query sets, each with 10K entries. The datasets introduced in this work are marked with a star.}
+    \label[table]{table:datasets}
+    
+
+    \small
+
+    \begin{minipage}{0.01\textwidth}
+    \begin{sideways}
+        In-distribution
+    \end{sideways}
+    \end{minipage}
+    \begin{minipage}{0.4\textwidth}
+        \centering
+        \begin{tabular}{lS[table-format=3]ccS[table-format=3]}
+        
+            \toprule
+            Dataset & {$D$} & {$n$} & Similarity & {$d$}\\
+            \midrule
+            gist-960-1M     & 960 & 1M   & Euclidean     & 160\\
+            deep-256-1M     & 256 & 1M   & Euclidean     & 96\\
+            open-images-512-1M    & 512 & 1M    & Cosine     & 160\\
+            open-images-512-13M    & 512 & 13M    & Cosine     & 160\\
+            \bottomrule
+        \end{tabular}
+    \end{minipage}
+    \hfill
+    \begin{minipage}{0.01\textwidth}
+    \begin{sideways}
+        Out-of-distribution
+    \end{sideways}
+    \end{minipage}
+    \begin{minipage}{0.45\textwidth}
+        \centering
+         \begin{tabular}{lS[table-format=3]ccS[table-format=3]}
+        
+            \toprule
+            Dataset & {$D$} & {$n$} & Similarity & {$d$}\\
+            \midrule
+            t2i-200-1M    & 200 & 1M & Inner prod. & 192\\
+            t2i-200-10M    & 200 & 10M & Inner prod. & 192\\
+            $^\star$wit-512-1M     & 512 & 1M  & Inner prod. & 256 \\        
+            laion-512-1M    & 512  & 1M & Inner prod.   & 320 \\
+            $^\star$rqa-768-1M      & 768  & 1M   & Inner prod.  & 160 \\
+            $^\star$rqa-768-10M      & 768  & 10M   & Inner prod.  & 160 \\
+            \bottomrule
+        \end{tabular}
+    \end{minipage}
+
+\end{table}
+
+
+\textbf{Datasets.}
+We evaluate the effectiveness of our method on a wide range of datasets with varied sizes ($n=1\text{M}$ to $n=13\text{M}$) and medium to high dimensionalities ($D=200$ to $D=960$), containing in-distribution (ID) and out-of-distribution (OOD) queries, see \cref{table:datasets}. For ID and OOD evaluations, we use standard and recently introduced datasets \citep{zhang_connecting_2022,text2image,Schuhmann2021,aguerrebere2024high}. We also introduce new datasets with different types of OOD characteristics: cross-modality with wit-512-1M and question-answering with rqa-768-1M and 10M. See \cref{sec:datasets} for more details.
+
+\textbf{Setup.}
+Throughout the experiments, LeanVec uses LVQ8 for the primary vectors and FP16 for the secondary vectors. For each dataset, we use the dimensionality $d$ that yields the highest search performance at 90\% accuracy (see \cref{table:datasets}). For LeanVec-OOD, we present the results using \cref{algo:leanvec} (\cref{algo:leanvec_eig_search} performs similarly as shown in \cref{fig:comparison_leanvec_fw_vs_es} of the appendix.)
+To prevent overfitting, we use two separate query sets (see \cref{sec:datasets}): one to learn the LeanVec-OOD projection matrices and to calibrate the runtime search parameters in SVS, and one to generate our results. As standard \citep{aumuller2020ann}, we report the best out of 10 runs for each method. Further experimental details can be found in \cref{sec:experimental_setup}, including a discussion on hyperparameter selection in \cref{sec:selecting_target_dimensionality}.
+
+
+\textbf{Search performance.}
+For this study, we use the graph built with uncompressed FP16 vectors to evaluate the search performance gains provided by LeanVec over the state-of-the-art methods in SVS on high-dimensional embedding vectors. \Cref{fig:search_graph_fp16_id,fig:search_graph_fp16_ood} show the search performance on datasets with in-distribution (ID) and out-of-distribution queries, respectively. In the ID datasets, both LeanVec-ID and LeanVec-OOD show similar performance, confirming \Cref{theo:leanvec_svd} in practice. LeanVec-OOD provides up to 10.2x and 3.7x performance gains over FP16 and LVQ, respectively, at a 10-recall@10 of 0.90 on gist-960-1M as it has the highest dimensionality amongst the evaluated datasets (recall is defined in \cref{sec:recall}). LeanVec-OOD shines on the OOD datasets, outperforming LeanVec-ID and LVQ by up to 1.5x and 2.8x, respectively, at a 10-recall@10 of 0.90 on rqa-768-1M. Note that the performance advantage of LeanVec diminishes when the dimensionality of the dataset is small, as in the case of t2i-200-1M. Lastly, LeanVec does not show significant gains in laion-512-1M. In this case, linear dimensionality reduction significantly impacts the accuracy of the search. We plan to address this issue in future work.     
+
+\begin{figure*}[t]
+  \centering
+   \includegraphics[width=0.8\textwidth]{figures/search_graph_fp16_id.pdf}
+  \caption{For in-distribution (ID) datasets, LeanVec-ID and LeanVec-OOD show similar performance and vast gains of up to 10.2x and 3.7x over FP16 and LVQ, respectively, for 10-recall@10 of 0.90.} 
+  \label{fig:search_graph_fp16_id}
+\end{figure*}
+
+\begin{figure*}[t]
+  \centering
+   \includegraphics[width=0.9\textwidth]{figures/search_graph_fp16_ood.pdf}
+  \caption{Search performance of LeanVec-OOD shines on out-of-distribution (OOD) datasets, outperforming LeanVec-ID and LVQ by up to 1.5x and 2.8x, respectively, for 10-recall@10 of 0.90.} 
+  \label{fig:search_graph_fp16_ood}
+\end{figure*}
+
+\textbf{Index construction.}
+LeanVec builds graphs up to 8.6x and 4.9x faster than FP16 and LVQ (\cref{fig:build_graph_time}) without degrading their quality, i.e., their search accuracy and speed (see \cref{fig:build_graph_qps} in the appendix). The accuracy preservation is a surprising fact, as the graph, being related to the Delaunay graph, is heavily related to the local topology of the data. Further theoretical studies to understand this phenomenon are required. In LeanVec's construction timings, we include the time to learn the projection matrices. We point out that the LeanVec-OOD learning (\cref{sec:alignment}) is implemented in Python, which can be easily optimized.
+
+\begin{figure*}[t]
+  \centering
+   \includegraphics[width=0.8\textwidth]{figures/build_graph_time.pdf}
+  \caption{LeanVec accelerates graph construction compared to the state-of-the-art SVS runtimes (by up to 8.6x and 4.9x over FP16 and LVQ, respectively). For OOD datasets, the increase in construction time with LeanVec-OOD over LeanVec-ID brings faster search performance.} 
+  \label{fig:build_graph_time}
+\end{figure*}
+
+\textbf{Comparison with the state of the art.}
+In addition to the state-of-the-art SVS-LVQ \citep{aguerrebere2023similarity}, we compare LeanVec to three widely adopted methods: HNSWlib \citep{malkov2018efficient}, Vamana \citep{jayaram2019diskann}, and FAISS-IVFPQfs \citep{johnson_billion-scale_2021}. See \cref{sec:experimental_setup} for further experimental details and configurations. Here, we use LeanVec-OOD as it achieves equal or better performance than LeanVec-ID in all cases.
+As shown in \cref{fig:sensitivity_comparison}, the combination of LeanVec with the SVS library achieves a significant performance lead over the other prevalent similarity search methods on high-dimensional datasets. SVS-LeanVec provides 1.1x, 1.9x, 2.8x, and 3.7x performance boost on t2i-200-1M, deep-256-1M, rqa-768-1M, and gist-960-1M, respectively, at a 10-recall@10 of 0.90 over the second-best method, SVS-LVQ, and 2.4x, 3.8x, 7.8x, and 8.5x, respectively, over the third-best method, FAISS-IVFPQfs. Note that the advantage gets higher as the dimensionality increases.
+
+\begin{figure*}[t]
+  \centering
+   \includegraphics[width=0.85\textwidth]{figures/sensitivity_comparison.pdf}
+  \caption{The combination of the state-of-the-art SVS library with LeanVec outperforms other mainstream similarity search methods by a large margin. Compared to FAISS-IVFPQfs, the second-best method outside SVS, SVS-LeanVec provides up to 8.5x performance gain at a 10-recall@10 of 0.90.} 
+  \label{fig:sensitivity_comparison}
+\end{figure*}
+
+\textbf{LeanVec scaling on larger datasets.}
+We run LeanVec on three datasets of 13 and 10 million vectors: open-images-512-13M, rqa-768-10M, and t2i-200-10M. As shown in \cref{fig:sensitivity_scaling}, LeanVec continues to show performance gains in larger datasets. LeanVec-OOD achieves 2x and 2.4x performance benefits over LVQ in open-images-512-13M and rqa-768-10M, respectively, at a 10-recall@10 of 0.90. Leaving SVS-LVQ aside, LeanVec-OOD provides much higher benefits when compared to the next best performing methods: 7.9x and 13.7x over HNSWlib in open-images-512-13M and rqa-768-10M, respectively. On t2i-200-10M, the benchmark dataset for the OOD track of the NeurIPS’23 Big-ANN competition \citep{simhadri2024neurips}, we consider the track winner RoarANN \citep{chen2024roarann}. SVS-LeanVec-OOD and SVS-LVQ perform similarly due to the original low-dimensionality ($D=200$) and outperform RoarANN by 2x at a 10-recall@10 of 0.90.
+
+\begin{figure*}[t]
+  \centering
+   \includegraphics[width=0.85\textwidth]{figures/sensitivity_comparison_sclaing.pdf}
+  \caption{LeanVec exhibits superior performance on large-scale datasets. SVS-LeanVec-OOD achieves performance gains of up to 2.4x over SVS-LVQ and 13.7x over HNSWlib at a 10-recall@10 of 0.90. On t2i-200-10M, compared to RoarANN \citep{chen2024roarann}, the OOD track winner of the NeurIPS'23 Big-ANN competition \citep{simhadri2024neurips}, SVS-LeanVec and SVS-LVQ provide 2x performance gain at a 10-recall@10 of 0.90.}
+  \label{fig:sensitivity_scaling}
+\end{figure*}
+
+\textbf{Ablation study: The target dimensionality.}
+The target dimensionality $d$ required to provide optimal search performance at a given accuracy depends on multiple factors like the system and dataset characteristics. As expected, a lower dimensionality yields higher search throughput at the cost of some accuracy loss. As shown in \cref{fig:sensitivity_reduced_dim}, the performance using values of $d$ that are either too low ($d=128)$ or too high ($d=320$) for LeanVec-OOD depart from the sweet spot, which is dataset-dependent. With low $d$, this is due to a loss in accuracy, which we compensate by retrieving more neighbor candidates for the re-ranking step. For high $d$, the memory and computation costs outweigh the diminishing accuracy improvements. For instance, in gist-960-1M and rqa-768-1M the best performance is reached at $d=160$, while in wit-512-1M the best performance is attained with $d=256$.
+
+\begin{figure*}[t]
+  \centering
+   \includegraphics[width=0.8\textwidth]{figures/sensitivity_reduced_dim2.pdf}
+  \caption{The level of dimensionality reduction at which LeanVec provides the best performance varies for each dataset. However, in all cases, LeanVec brings clear performance improvements over SVS-LVQ, a state-of-the-art solution that does not involve dimensionality reduction. There is a tradeoff between the accuracy and search performance at different target dimensionalities $d$. In most cases, setting $d=256$ is a reasonable compromise with 2-3x bandwidth reduction.} 
+  \label{fig:sensitivity_reduced_dim}
+\end{figure*}
+
+\textbf{Ablation study: The level of vector quantization.}
+LeanVec uses dimensionality-reduced primary vectors to fetch nearest neighbor candidates and secondary vectors to re-rank these candidates (see \cref{sec:leanvec}). Both vectors can be quantized using LVQ. In \cref{fig:sensitivity_quantization}, we study the effect of using different levels of quantization. For the primary vectors, using LVQ outperforms not using compression (FP16) and comes with a lower memory footprint. However, sometimes LVQ4 (using 4 bits per value) is not sufficient, requiring longer search windows to reach the same as LVQ8 (using 8 bits per value). For the secondary vectors, LVQ8 and FP16 provide similar performances except for t2i-200-1M where FP16 does slightly better. If memory footprint is important, we recommend using LVQ8 for the secondary vectors at a minimal cost.
+
+
+\begin{figure*}[t]
+  \centering
+   \includegraphics[width=0.9\textwidth]{figures/sensitivity_quantization.pdf}
+  \caption{LeanVec-OOD performance sensitivity to different compression schemes used for the primary and secondary vectors. Primary vectors show higher performance when compressed with LVQ8. For the secondary vectors, LVQ8 and FP16 yield similar performance except t2i-200-1M where FP16 does better.}
+  \label{fig:sensitivity_quantization}
+\end{figure*}
+
+\textbf{Ablation study: Re-ranking.}
+\cref{fig:sensitivity_dr_comp_reranking} compares the recall of LeanVec variants with two recent neural network based dimensionality reduction techniques: NN-MDS \citep{Canzar2021} and CCST \citep{zhang_connecting_2022}. To remove confounding factors, we perform exhaustive search for this experiment. NN-MDS and CCST only support the Euclidean distance, thus, for inner-product datasets, we used the transformation by \citet{Bachrach2014} to convert the vectors. Dimensionality is reduced by 4x for each dataset except t2i-200-1M where we reduce by 2x.\footnote{t2i-200-1M requires $d > 100$ to reach acceptable recalls, but CCST only allows the reduction in factors of 2.}
+For all three methods, the recall at 10 is unacceptably low (e.g., below 0.90). However, the recall at 50 improves drastically. This observation supports the use of re-ranking, as we can obtain 50 candidates, recompute their distance using secondary vectors to yield a recall at 10 on par with the recall at 50. LeanVec-OOD shows higher recalls than LeanVec-ID on datasets with OOD queries (t2i-200-1M and rqa-768-1M). Note that NN-MDS and CCST use complex neural networks to transform the vectors in low dimensionality, precluding their use for search as the query transformation time is exorbitant. 
+
+\begin{figure*}[t]
+  \centering
+   \includegraphics[width=0.85\textwidth]{figures/sensitivity_dr_comp_reranking.pdf}
+  \caption{The recall at 10 of all dimensionality reduction techniques suffer (blue bars). However, recall at 50 remains strong. Thus, after selecting 50 candidates and re-ranking them, recall at 10 reaches optimal levels. Like other state-of-the-art techniques, both LeanVec variants show perfect recall on ID datasets, while LeanVec-OOD proves superior in OOD datasets. NN-MDS and CCST employ neural networks for non-linear dimensionality reduction, whose computational complexity precludes their use for search.}
+  \label{fig:sensitivity_dr_comp_reranking}
+\end{figure*}
+
+
+\section{Related Work}
+\label{sec:background}
+
+The application of linear dimensionality reduction for approximate nearest neighbor search is not new \citep{deerwester1990indexing,ailon2009fast}. A few studies \citep{jegou_aggregating_2010,gong2012iterative,babenko2014inverted,wei_projected_2014} used it for ID queries while the OOD case has been largely ignored.
+
+Hashing \citep{indyk1998approximate,jafari_survey_2021} and learning-to-hash \citep{wang_survey_2018,luo2023survey} techniques often struggle to simultaneously achieve high accuracy and high speeds.
+
+Product Quantization (PQ) \citep{jegou2010product} and other related methods \citep{ge2013optimized,babenko_additive_2014,zhang2014composite,andre_cache_2015,matsui_paper_2018,guo2020accelerating,wang_deltapq_2020,johnson_billion-scale_2021,andre2021quicker_adc,ko2021low} were introduced to handle large datasets in settings with limited memory capacity \citep[e.g.,][]{jayaram2019diskann,jaiswal2022ood}.
+With these techniques, the similarity between (partitions of) the query and each corresponding centroid is precomputed to create a look-up table of partial similarities.
+The complete similarity computation can then be posed as a set of indexed gather and accumulate operations on this table, which are generally quite slow \citep{pase2019gather}. This is exacerbated with an increased dimensionality $D$: the lookup table does not fit in L1 cache, which slows down the gather operation even further.
+Quicker ADC \citep{andre2021quicker_adc} offers a clever fix by optimizing these table lookup operations using AVX shuffle and blend instructions to compute the similarity between a query and multiple database elements in parallel. This parallelism can only be achieved if the database elements are stored contiguously in a transposed fashion. This transposition, and Quicker ADC by extension, are ideally suited for inverted indices \citep{johnson_billion-scale_2021} but are not compatible with the random memory access pattern in graph-based similarity search.
+
+Dimensionality reduction is deeply related to metric learning \citep{bellet2013survey}. In the ID case, any metric learned for the main dataset will be equally suitable for similarity search. However, this metric may be unsuitable for similarity search in the OOD case. As an instance of deep metric learning \citep{kaya2019deep}, CCST \citep{zhang_connecting_2022} uses transformers to reduce the dimensionality of deep learning embedding vectors. However, the computational complexity of transformers precludes their usage for search and circumscribes their application to index construction, where they lead to significant performance gains. LeanVec outperforms CCST for index construction (\cref{fig:sensitivity_dr_comp_reranking}) and can be equally used for search.
+
+Lastly, \citet{he2021efficient} and \citet{izacard2020memory} used PCA in the context of retrieval-augmented language models, showing that their perplexity score is maintained and their overall speed is boosted. However, they treat the similarity search system as a black box and do not address out-of-distribution aspects.
+
+\section{CONCLUSIONS}
+\label{sec:conclusion}
+
+In this work, we presented LeanVec, a framework that combines linear dimensionality reduction with vector quantization to accelerate similarity search on high-dimensional vectors, including those produced by deep learning models. Additionally, LeanVec speeds up the time-consuming construction of the index used to conduct the search. We presented LeanVec variants for in-distribution (ID) and out-of-distribution (OOD) queries, both leading to state-of-the-art results. LeanVec-OOD uses two novel techniques for dimensionality reduction that consider the query and database distributions to simultaneously boost the accuracy and the performance of the framework even further (even matching the performance of LeanVec-ID in the ID setting). Overall, our extensive and varied experiments show that LeanVec yields state-of-the-art results, with an up to 3.7x improvement in search throughput and up to 4.9x faster index build time over the best alternatives.
+
+As future work, we will investigate why laion-512-1M is resistant to higher levels of linear dimensionality reduction (and whether this behavior extends to other datasets) and propose a solution. We also plan to optimize the LeanVec-OOD learning algorithm, implementing it in C++ using \citet{onemkl}.
+
+%\section*{Acknowledgements}
+
+%\clearpage
+%\onecolumn
+%\begin{multicols}{2}
+%\bibliographystyle{ACM-Reference-Format}
+\bibliographystyle{agsm}
+\bibliography{refs}
+%\end{multicols}
+
+\appendix
+
+\section{Speeding up graph construction with dimensionality reduction}
+\label[appendix]{sec:graph_construction}
+
+In the introduction, we discuss the bottlenecks observed when searching with high-dimensional vectors using a graph index. However, these difficulties extend to the construction process of the graph index itself. In every graph index, the construction process can be divided into two main steps: search and pruning.
+
+We start from a directed graph $G = (\set{X}, E)$, where the database vector set $\set{X}$ is used as the node set and the edge set $E$ is initialized depending on the specific graph-construction algorithm \citep{malkov2018efficient,jayaram2019diskann}, where we may even start with $E = \emptyset$. In order to keep the search complexity bounded, each node in the graph has a maximum out-degree $R$. To build the graph, we iteratively perform the following update routine for each node $\vect{x} \in \set{X}$:
+\begin{description}
+    \item[Search] We first run the search algorithm using the node $\vect{x}$ as the query on the current graph $G$, seeking a set of $\set{C}$ of approximate nearest neighbors with cardinality larger than $R$.
+    \item[Pruning] We use $\set{C}$ as a set of candidate nodes to form outgoing edges (or arcs) from $\vect{x}$. To increase the navigability of the graph, a pruning algorithm \citep{arya1993approximate,malkov2018efficient,jayaram2019diskann} is run on $\set{C}$, yielding a set $\set{C}' \subseteq \set{C}$ such that $|\set{C}'| < R$. We then replace all the arcs in $E$ starting from $\vect{x}$ with the set $\{ (\vect{x}, \vect{x}') \,|\, \vect{x}' \in \set{C}' \}$. It is important to note that all pruning algorithms rely on computing distances between pairs of vectors in $\vect{C}$.
+\end{description}
+
+Any slowdowns caused by working with high-dimensional vectors will carry over directly to the graph construction process. The runtime of the search and pruning algorithms are dominated by fetching high-dimensional vectors from memory and computing distances on them. \citet{zhang_connecting_2022} observed that graph construction can be accelerated by reducing the vector dimensionality. However, because the dimensionality reduction technique proposed by \citet{zhang_connecting_2022} has a time-consuming inference algorithm (based on transformers), it cannot be applied for search: its runtime exceeds the runtime of the search itself). LeanVec applies equally to the search and graph construction processes by alleviating memory pressure while remaining computationally lean.
+
+\textbf{Scalability.} The graph construction technique detailed above is executed (at least once) for each node in the graph (i.e., for each vector in the database). Thus, the technique scales linearly with the graph size both in the number $n$ of nodes and in the number of edges (this quantity is upper bounded by $nR$). Consequently, the LeanVec acceleration has a linear impact on the graph construction runtime.
+
+
+\section{Proof of \texorpdfstring{\cref{theo:leanvec_svd}}{}}
+\label[appendix]{sec:leanvec_svd_proof}
+
+Let $\mat{A}, \mat{B} \in \operatorname{St} (D, d)$.
+\begin{align}
+    \norm{\transpose{\mat{Q}} \transpose{\mat{A}} \mat{B} \mat{X} - \transpose{\mat{Q}} \mat{X}}{F}^2  
+    \leq
+    \norm{\mat{Q}}{F}^2 \cdot \norm{\transpose{\mat{A}} \mat{B} \mat{X} - \mat{X}}{F}^2 \\
+    %
+    \norm{\mat{Q}}{F}^{-2} \cdot \norm{\transpose{\mat{Q}} \transpose{\mat{A}} \mat{B} \mat{X} - \transpose{\mat{Q}} \mat{X}}{F}^2 
+    \leq
+    \norm{\transpose{\mat{A}} \mat{B} \mat{X} - \mat{X}}{F}^2
+\end{align}
+
+Thus,
+\begin{equation}
+    \norm{\mat{Q}}{F}^{-2} \cdot \min_{\mat{A}, \mat{B} \in \operatorname{St} (D, d)} \norm{\transpose{\mat{Q}} \transpose{\mat{A}} \mat{B} \mat{X} - \transpose{\mat{Q}} \mat{X}}{F}^2
+    \leq
+    \min_{\mat{A}, \mat{B} \in \operatorname{St} (D, d)} \norm{\transpose{\mat{A}} \mat{B} \mat{X} - \mat{X}}{F}^2
+    =
+    \min_{\mat{A}, \mat{B}} \norm{\transpose{\mat{A}} \mat{B} \mat{X} - \mat{X}}{F}^2 ,
+\end{equation}
+where the last equality is derived from observing that the linear autoencoder,
+\begin{equation}
+    \mat{A}^*, \mat{B}^* = \argmin_{\mat{A}, \mat{B} \in \Real^{d \times D}} \norm{\transpose{\mat{A}} \mat{B} \mat{X} - \mat{X}}{F}^2
+\end{equation}
+has a solution $\mat{A}^*, \mat{B}^*$ given by truncating the left singular vectors of $\mat{X}$ and, in this case, $\mat{A}^*, \mat{B}^* \in \operatorname{St} (D, d)$.
+
+Finally, without loss of generality, we can re-normalize each query $\vect{q}_j$ for $j=1,\dots,m$ such that $\norm{\vect{q}_j}{2}^2 = m^{-1}$, which yields $\norm{\mat{Q}}{F}^{-2} = 1$ and
+\begin{equation}
+    \min_{\mat{A}, \mat{B} \in \operatorname{St} (D, d)} \norm{\transpose{\mat{Q}} \transpose{\mat{A}} \mat{B} \mat{X} - \transpose{\mat{Q}} \mat{X}}{F}^2
+    \leq
+    \min_{\mat{A}, \mat{B}} \norm{\transpose{\mat{A}} \mat{B} \mat{X} - \mat{X}}{F}^2 .
+\end{equation}
+
+
+\section{Convergence analysis of the Frank-Wolfe algorithm for LeanVec-OOD}
+\label[appendix]{sec:leanvec_FW_convergence}
+
+\citet{gidel2018frank} has shown that Frank-Wolfe algorithms are convergent for convex problems over the intersection of convex sets. \citet{lacoste2016convergence} proved that Frank-Wolfe converges to a stationary point on non-convex objectives. However, to the best of our knowledge, the case with inexact BCD has not been studied in the literature.
+
+
+We consider the general constrained problem
+\begin{equation}
+    \min_{z \in \set{D}} f(z) ,
+    \label[problem]{prob:constrained_nonconvex}
+\end{equation}
+where $f$ is a non-convex and continuously differentiable function and $\set{D}$ is a convex set.
+
+We now present two extensions of $\| \nabla f(z^{(t)}) \|$ and the Lipschitz assumption, which are standard in unconstrained optimization, suitable for constrained optimization \citep{lacoste2016convergence}.
+\begin{definition}
+    The Frank-Wolfe gap at $z^{(t)}$ is defined as
+    \begin{equation}
+        g^{(t)}
+        =
+        \max_{s \in \set{D}} \langle s - z^{(t)}, -\nabla f(z^{(t)}) \rangle \geq 0 .
+    \end{equation}
+    A point $z^{(t)}$ is a stationary point for the \cref{prob:constrained_nonconvex} if and only if $g_t = 0$.    
+\end{definition}
+
+\begin{definition}
+    The curvature constant $C_f$ of a continuously differentiable function $f$, with respect to the compact domain $\set{D}$, is defined as
+    \begin{equation}
+        C_f = \sup_{
+            \substack{
+                z, s \in \set{D} ,\
+                \gamma \in [0, 1] \\
+                y = x + \gamma(s - x)
+            }}
+        \tfrac{2}{\gamma^2} \left( f(y) - f(z) - \langle \nabla f(z), y - z \rangle \right) .
+    \end{equation}
+    \label[definition]{def:curvature}
+\end{definition}
+
+\begin{lemma}[{\citet[Lemma 7]{jaggi2013revisiting}}]
+    If $\nabla f$ is L-Lipschitz continuous on $\set{D}$,
+    i.e.,
+    $\| \nabla f(z) - \nabla f(y)\| \leq L \| z - y \|$, then $C_f \leq L \left( \operatorname{diam}_{\| \cdot \|} (\set{D}) \right)^2$,
+    where $\operatorname{diam}_{\| \cdot \|}$ denotes the $\| \cdot \|$-diameter.
+\end{lemma}
+
+In our case, $z = \{ \mat{A}, \mat{B} \}$, $f$ is defined in \cref{eq:leanvec_loss}, and $\set{D} = \{ z \,|\, \mat{A} \in \set{C} \land \mat{B} \in \set{C} \}$ for $\set{C}$ defined in \cref{eq:stiefel_convex_hull}. $\set{D}$ is convex, being the intersection of two convex sets, and $f$ is a non-convex function of $z$. The partial derivatives in \cref{eq:leanvec_gradients} are linear, and thus L-Lipschitz continuous, and $\operatorname{diam}_{\| \cdot \|} (\set{C})$ is bounded. This implies that the curvature for $\mat{A}$ (resp.~$\mat{B}$), given a fixed $\mat{B}$ (resp.~$\mat{A}$) is finite.
+
+We are now ready to state our main convergence result.
+
+\begin{theorem}
+    \label[theorem]{theo:leanvec_convergence}
+    Consider \cref{prob:leanvec} and running \cref{algo:leanvec} with step size $\gamma^{(t)} = 1/(t+1)^\alpha$ for some $\alpha \in (0, 1)$ and $T \geq 6$ iterations. Then, it holds that
+    \begin{equation}
+        \min_{k \in [T/2+1, T]} \left( g^{(k)}_{\mat{A}} + g^{(k)}_{\mat{B}} \right)
+        \leq
+        \frac{1}{T^{1-\alpha}}\frac{1-\alpha}{ 1 - \left( 2/3 \right)^{1-\alpha} }
+        \left( h_0 + C \right) .
+    \end{equation}
+    where $\displaystyle h_{T/2+1} = f \left(\mat{A}^{(T/2+1)}, \mat{B}^{(T/2+1)} \right) - \min_{\substack{\mat{A}, \mat{B} \in \set{C}}} f(\mat{A}, \mat{B})$ is the midway global suboptimality and
+    \begin{align}
+        g^{(t)}_{\mat{A}}
+        &=
+        \left\langle -\tfrac{\partial}{\partial \mat{A}} f(\mat{A}^{(t)}, \mat{B}^{(t)}), \mat{S}^{(t)}_{\mat{A}} - \mat{A}^{(t)} \right\rangle ,
+        \\
+        g^{(t)}_{\mat{B}}
+        &=
+        \left\langle -\tfrac{\partial}{\partial \mat{B}} f(\mat{A}^{(t+1)}, \mat{B}^{(t)}), \mat{S}^{(t)}_{\mat{B}} - \mat{B}^{(t)} \right\rangle
+    \end{align}
+    are the Frank-Wolfe gaps for $\mat{A}$ and $\mat{B}$, respectively.
+    It thus takes at most $O \left( 1/\epsilon^{1/(1-\alpha)} \right)$ iterations to find an approximate stationary point with gap smaller than $\epsilon$.
+\end{theorem}
+
+\proof{
+Following \cref{algo:leanvec}, we have $\mat{\mat{A}}^{(t+1)} = \mat{A}^{(t)} + \gamma \left( \mat{S}^{(t)}_{\mat{A}} - \mat{A}^{(t)} \right)$. Starting from \cref{def:curvature}, \citet{frank1956algorithm} and \citet{lacoste2016convergence} proved that
+\begin{align}
+    f(\mat{A}^{(t+1)}, \mat{B}^{(t)}) - f(\mat{A}^{(t)}, \mat{B}^{(t)})
+    &\leq
+    \gamma \left\langle \tfrac{\partial}{\partial \mat{A}} f(\mat{A}^{(t)}, \mat{B}^{(t)}), \mat{S}^{(t)}_{\mat{A}} - \mat{A}^{(t)} \right\rangle + \tfrac{\gamma^2}{2} C_{f_{\mat{A}}}
+    \\
+    &\leq
+    - \gamma g^{(t)}_{\mat{A}} + \tfrac{\gamma^2}{2} C_{f_{\mat{A}}} .
+    \label[equation]{eq:bound_curvature_A}
+\end{align}
+By analogy on $\mat{B}$, we have
+\begin{equation}
+    f(\mat{A}^{(t+1)}, \mat{B}^{(t+1)}) - f(\mat{A}^{(t+1)}, \mat{B}^{(t)})
+    \leq
+    - \gamma g^{(t)}_{\mat{B}} + \tfrac{\gamma^2}{2} C_{f_{\mat{B}}}
+    \label[equation]{eq:bound_curvature_B}
+\end{equation}
+
+Let $C \geq \max \{ C_{f_{\mat{A}}}, C_{f_{\mat{B}}} \}$. Summing \cref{eq:bound_curvature_A,eq:bound_curvature_B}, we get
+\begin{align}
+    f(\mat{A}^{(t+1)}, \mat{B}^{(t+1)}) - f(\mat{A}^{(t)}, \mat{B}^{(t)})
+    &\leq
+    - \gamma^{(t)} g^{(t)}_{\mat{A}} + \tfrac{\gamma^2}{2} C
+    - \gamma^{(t)} g^{(t)}_{\mat{B}} + \tfrac{\gamma^2}{2} C
+    \\
+    &\leq
+    - \gamma^{(t)} \left( g^{(t)}_{\mat{A}} + g^{(t)}_{\mat{B}} \right) + \left( \gamma^{(t)} \right)^2 C
+    \label[equation]{eq:bound_curvature_AB}
+\end{align}
+
+Now, summing over the steps in $t=T/2+1, \dots, T$ steps,
+\begin{align}
+    f(\mat{A}^{(T)}, \mat{B}^{(T)}) - f(\mat{A}^{(T/2+1)}, \mat{B}^{(T/2+1)})
+    &= \sum_{k=T/2+1}^{T} f(\mat{A}^{(k+1)}, \mat{B}^{(k+1)}) - f(\mat{A}^{(k)}, \mat{B}^{(k)})
+    \\
+    &\leq
+    \sum_{k=T/2+1}^{T} - \gamma^{(k)} \left( g^{(k)}_{\mat{A}} + g^{(k)}_{\mat{B}} \right) + \left( \gamma^{(k)} \right)^2 C
+    \\
+    &\leq
+    - \left( \sum_{k=T/2+1}^{T} \gamma^{(k)} \right) \min_{t' \in [T/2+1, T]} \left( g^{(t')}_{\mat{A}} + g^{(t')}_{\mat{B}} \right)    + C \sum_{k=T/2+1}^{T} \left( \gamma^{(k)} \right)^2
+    \label[equation]{eq:bound_curvature_AB_summed}
+\end{align}
+\citet[Equation~(64)]{wai2017decentralized} showed that
+\begin{equation}
+    \sum_{k=T/2+1}^{T} \gamma^{(k)}
+    \geq \frac{T^{1-\alpha}}{1-\alpha} \left( 1 - \left( \frac{2}{3} \right)^{1-\alpha} \right) .
+    \label[equation]{eq:sum_gamma}
+\end{equation}
+Additionally,
+\begin{equation}
+    \sum_{k=T/2+1}^{T} \left( \gamma^{(k)} \right)^2
+    = \sum_{k=T/2+1}^{T} \frac{1}{(k + 1)^2}
+    \leq 1 .
+    \label[equation]{eq:sum_gamma_squared}
+\end{equation}
+
+Let $\displaystyle h_{T/2+1} = f(\mat{A}^{(T/2+1)}, \mat{B}^{(T/2+1)}) - \min_{\substack{\mat{A}, \mat{B} \in \set{C}}}f(\mat{A}, \mat{B})$.
+By definition,
+\begin{equation}
+    f(\mat{A}^{(T)}, \mat{B}^{(T)}) - f(\mat{A}^{(T/2+1)}, \mat{B}^{(T/2+1)}) \geq -h_{T/2+1} .
+    \label[equation]{eq:h0_bound}
+\end{equation}
+Finally,
+plugging \cref{eq:sum_gamma,eq:sum_gamma_squared,eq:h0_bound} in \cref{eq:bound_curvature_AB_summed} we get
+\begin{equation}
+    \min_{t' \in [T/2+1, T]} \left( g^{(t')}_{\mat{A}} + g^{(t')}_{\mat{B}} \right)
+    \leq
+    \frac{1}{T^{1-\alpha}}\frac{1-\alpha}{ 1 - \left( 2/3 \right)^{1-\alpha} }
+    \left( h_0 + C \right) .
+\end{equation}
+\qed}
+
+Interestingly, our setting is very related to one in the recent work by \citet{peng2023block}. They study \cref{prob:constrained_nonconvex} with a BCD algorithm, but concentrate on the exact minimization of the subproblems or in a case where retractions are applied. We leave as future work the extension of \Cref{theo:leanvec_convergence} and its proof to the general setting with more than two blocks.
+
+
+\section{Experimental setup.}
+\label[appendix]{sec:experimental_setup}
+
+Without loss of generality, we use the Vamana algorithm \citep{jayaram2019diskann} to build the graph and standard greedy traversal with backtracking \citep{fu_fast_2019} for search. Unless specified otherwise, we use the following configurations for graph construction: we set $R=128$, $L=200$, $\alpha=1.2$ for L2 distance, and  $\alpha=0.95$ for inner product.
+
+\subsection{Baseline approaches}
+
+We use the state-of-the-art Scalable Vector Search (SVS) library as our main baseline with the same graph construction hyperparameters as the ones chosen for LeanVec and its LVQ implementation with the LVQ4x8 scheme \citep{aguerrebere2023similarity}.
+
+Apart from the state-of-the-art SVS-LVQ \citep{aguerrebere2023similarity}, we compare LeanVec to three widely adopted methods: HNSWlib \citep{malkov2018efficient}, Vamana \citep{jayaram2019diskann}, and FAISS-IVFPQfs \citep{johnson_billion-scale_2021}. For HNSWlib, Vamana, and FAISS-IVFPQfs, we use the configuration settings provided in ANN-benchmarks ~\citep{aumuller2020benchmarking} and generate Pareto curves of QPS vs. recall. For Vamana, in addition to the ANN-Benchmark settings, we include the results with graphs built using $R=128$, $L=200$, and $\alpha=1.2$ (the same parameters used to construct SVS graphs).
+
+On the evaluated datasets, we observed no performance benefits of the OOD-DiskANN\footnote{\url{https://github.com/microsoft/DiskANN/tree/ood-queries}} \citep{jaiswal2022ood} over the baseline Vamana when using disjoint learning and test query sets.
+
+We also considered RoarANN \citep{chen2024roarann}, the winner of the OOD track of the NeurIPS’23 Big-ANN competition \citep{simhadri2024neurips}, using the hyperparameters used by its authors for the competition. RoarANN failed with a segfault while building indices for open-images-512-13M and rqa-768-10M.
+
+\subsection{Finding the optimal target dimensionality $d$}
+\label{sec:selecting_target_dimensionality}
+
+In our experiments, we only vary one parameter to tune the performance: the target dimensionality $d$. The hyperparameters used to build the indices are set once and shared for all datasets (described in the introductory paragraph of \cref{sec:experimental_setup}).
+The choice of LVQ-8 for the primary vectors and either LVQ-8 or FP16 for the secondary vectors is consistently superior to the other choices (see \cref{fig:sensitivity_quantization}). Thus, we also keep this choice fixed throughout the experiments.
+
+The target dimensionality $d$ that yields the best performance is dataset dependent as the loss we are optimizing depends on the data distribution (see the ablation study in \cref{fig:sensitivity_reduced_dim}). However, for most datasets whose dimensionality is typical of modern deep learning models, there is an optimum that lies somewhere in the range [160, 256]. Notice that the differences between the achieved performance when $d$ is in this range are not striking. Any of these choices would yield significant improvements over the state of the art. Even a poor choice, like $d=320$ is in many cases, already provides significant performance gains over the state of the art. A user not seeking to do any hyperparameter tuning will be covered by picking $d \in [160, 256]$.
+
+We point out that tuning $d$ is no different than tuning, for example, the number of segments used in a product quantizer, the number of levels using in a residual quantizer, or the number of clusters used in a traditional vector quantizer. With any vector compression method, its optimal behavior will depend on finding the best fit to a specific data distribution. It is important, though, that its behavior degrades gracefully as we move away from the best-fit hyperparameters. Our experiments show that LeanVec does exhibit such a graceful degradation.
+
+For each dataset, we use the dimensionality $d$ that yields the highest search performance at 90\% accuracy (see \cref{table:datasets}). To find this $d$, we use the same graph built from uncompressed vectors and measure the search throughput by increasing $d$ in steps of 32 starting from 64. This involves building projection matrices, projecting the database vectors for each $d$, and finally running searches to find the best $d$.
+
+
+\subsection{Metrics}
+\label[appendix]{sec:recall}
+
+Search accuracy is measured by $k$-recall$@k$, defined by $| S \cap G_t | / k$, where $S$ are the ids of the $k$ retrieved neighbors and $G_t$ is the ground-truth. Unless otherwise specified, we use $k=10$ in all experiments and 0.9 as the default accuracy value. Search performance is measured by queries per second (QPS). 
+
+
+\subsection{System setup}
+
+We conduct our experiments on a 2-socket 3rd generation Intel{\textregistered} Xeon{\textregistered} 8360Y @2.40GHz CPUs with 36 cores (2x hyperthreading enabled) and 256GB DDR4 memory (@2933MT/s) per socket, running Ubuntu 22.04.\footnote{Performance varies by use, configuration and other factors. Learn more at \url{www.Intel.com/PerformanceIndex}. Performance results are based on testing as of dates shown in configurations and may not reflect all publicly available updates.
+No product or component can be absolutely secure. Your costs and results may vary. Intel technologies may require enabled hardware, software or service activation. \textcopyright Intel Corporation.  Intel, the Intel logo, and other Intel marks are trademarks of Intel Corporation or its subsidiaries.  Other names and brands may be claimed as the property of others.}
+We ran all our experiments using 72 threads on a single socket to avoid introducing performance regressions due to remote NUMA memory accesses. Further, as recommended by ~\citet{aguerrebere2023similarity}, we use the \textit{hugeadm} Linux utility to preallocate a sufficient number of 1GB huge pages.
+
+\section{Datasets}
+\label[appendix]{sec:datasets}
+
+We evaluate the effectiveness of our method on a wide range of in-distribution (ID) and out-of-distribution (OOD) datasets as shown in \cref{table:datasets}.
+
+Following the experimental setup by \citet{zhang_connecting_2022}, we use gist-960-1M and deep-256-1M, two standard high-dimensional ID datasets.\footnote{\url{https://www.cse.cuhk.edu.hk/systems/hash/gqr/datasets.html}} We utilize the learn sets provided in these datasets to construct test and validation query sets, with the first 10K entries as test and the next 10k as validation.
+    
+We use the ID datasets open-images-512-1M and open-images-512-13M \citep{aguerrebere2024high}, with 1 million and 13 million database vectors, generated from a subset Google's Open Images \citep{OpenImages} using the CLIP model \citep{radford2021learning}. Although built for cosine similarity, we use the equivalent operation of minimizing the Euclidean distances since the vectors in this dataset are normalized. We use the provided queries to represent the test set while the validation set is created from the first 10K entries of the provided learn queries.
+   
+For OOD evaluations, we use the first one million vectors from two cross-modal text-to-image datasets, namely t2i-200-1M \citep{text2image} and laion-512-1M \citep{Schuhmann2021}, where the query and database vectors are text and image embeddings, respectively. We divide the $10^5$ queries provided in t2i-200-1M into a test set (first $10^4$ entries) and a learning set (next $10^4$ entries). In laion-512-1M, we use the text embeddings in the \texttt{text\_emb\_101.npy} file\footnote{file name: \texttt{text\_emb\_101.npy} in \url{https://deploy.laion.ai/8f83b608504d46bb81708ec86e912220/embeddings/text_emb/} } to build the query set, using  the initial $10^4$ for the test set and the next $10^4$ for the learning set.  
+
+\subsection{New text-to-image dataset with OOD queries}
+
+We introduce wit-512-1M, a new dataset with OOD queries stemming from a text-to-image application. The WIT dataset\footnote{\url{https://github.com/google-research-datasets/wit}} is a multimodal multilingual dataset that contains 37 million rich image-text examples extracted from Wikipedia pages. For each example in the first million, we take the image\footnote{Images downloaded from \url{https://storage.cloud.google.com/wikimedia-image-caption-public/image_data_train.tar}} and encode it using the multimodal OpenAI CLIP-ViT-B32 model \citep{radford2021learning} to generate a database vector. We create the query set using the first $2\cdot10^4$ text descriptions in one of the provided test sets\footnote{Downloaded from \url{https://storage.googleapis.com/gresearch/wit/wit_v1.test.all-00000-of-00005.tsv.gz}} (concatenating the Reference and Attribution description fields) and generating the corresponding embeddings using CLIP-ViT-B32-multilingual-v1 ~\citep{Reimers2020}.\footnote{The use of CLIP-ViT-B32 for images and multi-lingual CLIP-ViT-B32-multilingual-v1 for text follows the protocol suggested in \url{https://huggingface.co/sentence-transformers/clip-ViT-B-32-multilingual-v1}.} Finally, for each query, we compute the 100 ground truth nearest neighbors using maximum inner product. We use the first $10^4$ queries as a test set and the remaining $10^4$ as a learning set.
+
+\subsection{New question-answering dataset with ID and OOD queries}
+
+We introduce two instances of a new dataset with OOD queries stemming from a question-answering application, rqa-512-1M and rqa-512-10M, respectively with 1M and 10M vectors. Here, we encode text using the RocketQA dense passage retriever model \citep{qu-etal-2021-rocketqa}.\footnote{\url{https://github.com/PaddlePaddle/RocketQA}} The OOD nature of the queries emerges as dense passage retrievers use different neural networks to encode the questions (i.e, queries) and the answers (i.e., database vectors). We created ID and OOD versions of this dataset, although in the experiments in this paper we use the OOD variant.
+    
+We created the vector embeddings using text snippets from AllenAI's\footnote{\url{https://huggingface.co/datasets/allenai/c4}} C4 dataset \citep{raffel2020t5} as follows.
+\begin{itemize}
+    \item From the data split \emph{en/training}, we generate $10^7 + 2 \cdot 10^4$ snippets (using files \emph{c4-train.00000-of-01024.json.gz} to \emph{c4-train.00032-of-01024}). The first $10^6$ and $10^7$ snippets are encoded with the answer model to form the database vectors for the 1 and 10 million variants, respectively. The last $2 \cdot 10^4$ snippets are encoded to form the queries of the ID variant, from which we use the first $10^4$ as a query learning set and the last $10^4$ as a query test set.
+
+    \item From the data split \emph{en/validation}, we generate $2 \cdot 10^4$ snippets (using file \emph{c4-validation.00000-of-00008.json.gz}). These snippets are encoded with the question model to form the queries of the OOD variant, from which we use the first $10^4$ as a query learning set and the last $10^4$ as a query test set.
+\end{itemize}
+
+For each query, we compute the 100 ground truth nearest neighbors using maximum inner product as suggested by \citet{karpukhin2020dense}.
+
+We will soon release the code to generate wit-512-1M, rqa-768-1M, and rqa-768-10M at \url{https://github.com/IntelLabs/VectorSearchDatasets}.
+
+\begin{figure}[t]
+    \centering
+    \includegraphics[width=0.45\textwidth]{figures/sensitivity_gist_qps_bandwidth.pdf}
+    \caption{For high dimensional vectors (e.g., $D=960$), search performance scales with the level of memory compression. Compared to the FP16 encoding, LVQ8 and LVQ4x8 compress the vectors by 2x and \textasciitilde 4x for search, respectively, while LeanVec reduces the vector size by 12x (6x from dimensionality reduction and 2x from LVQ8). At 72 threads (our system has 36 physical cores and 72 threads), LeanVec provides \textasciitilde 12x performance gain over FP16 while consuming much lesser memory bandwidth.} 
+    \label{fig:gist_qps_bandwidth}
+\end{figure}
+
+\begin{figure*}[t]
+    \centering
+    \includegraphics[width=0.9\textwidth]{figures/comparison_leanvec_fw_vs_es.pdf}
+    \caption{Search throughput and accuracy comparison between the two LeanVec-OOD variants, namely LeanVec-FW (\cref{algo:leanvec}) and LeanVec-ES (\cref{algo:leanvec_eig_search}).} 
+    \label{fig:comparison_leanvec_fw_vs_es}
+\end{figure*}
+
+\begin{figure*}[t]
+    \centering
+    \includegraphics[width=0.9\textwidth]{figures/build_graph_qps.pdf}
+    \caption{Search throughput and accuracy comparison for different LeanVec combinations. We observe no noticeable differences in the graphs built with and without dimensionality reduction.} 
+    \label{fig:build_graph_qps}
+\end{figure*}
+
+
+
+\begin{figure}[t]
+    \centering
+
+    \begin{minipage}{0.5\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{figures/leanvec_sample_sizes_RQA-1M-OOD.pdf}%    
+    \end{minipage}%
+    \begin{minipage}{0.5\textwidth}
+        \centering
+        \begin{small}
+        Relative errors
+        \begin{align*}
+            &
+            {\color[HTML]{1f77b4}
+                \norm{n_s^{-1} \mat{Q}_{n_s} \transpose{\mat{Q}_{n_s}} - m^{-1} \mat{Q} \transpose{\mat{Q}}}{F} / \norm{m^{-1} \mat{Q} \transpose{\mat{Q}}}{F}
+            }
+            \\
+            &
+            {\color[HTML]{ff7f0e}
+                \norm{n_s^{-1} \mat{X}_{n_s} \transpose{\mat{X}_{n_s}} - n^{-1} \mat{X} \transpose{\mat{X}}}{F} / \norm{n^{-1} \mat{X} \transpose{\mat{X}}}{F}
+            }
+            \\
+            &
+            {\color[HTML]{2ca02c}
+                \norm{\transpose{\mat{A}_{n_s}} \mat{A}_{n_s} - \transpose{\mat{A}} \mat{A}}{F} / \norm{ \transpose{\mat{A}} \mat{A}}{F}
+            }
+            \\
+            &
+            {\color[HTML]{d62728}
+                \norm{\transpose{\mat{B}_{n_s}} \mat{B}_{n_s} - \transpose{\mat{B}} \mat{B}}{F} / \norm{ \transpose{\mat{B}} \mat{B}}{F}
+            }
+            \\
+            &
+            {\color[HTML]{9467bd}
+                \norm{\transpose{\mat{P}_{n_s}} \mat{P}_{n_s} - \transpose{\mat{P}} \mat{P}}{F} / \norm{ \transpose{\mat{P}} \mat{P}}{F}
+            }
+        \end{align*} 
+        \end{small}
+    \end{minipage}
+
+    
+    \caption{The error between a sample covariance matrix and its expectation converges quickly \citep{koltchinskii2017concentration} with a growing sample size (at a $\sqrt{n}$ rate). This quick convergence carries over to the LeanVec-OOD loss being a function of $\mat{K}_{\mat{Q}} = \mat{Q} \transpose{\mat{Q}}$ and $\mat{K}_{\mat{X}} = \mat{X} \transpose{\mat{X}}$. In this experiment, we first optimize the LeanVec-OOD loss, using the full learning sets with $n=10^6$ database vectors and $m=10^4$ queries, with \cref{algo:leanvec} to obtain $\mat{A}$ and $\mat{B}$ or with \cref{algo:leanvec_eig_search} to obtain $\mat{P}$. Then, using different numbers $n_s$ of random subsamples to compute $\mat{K}_{\mat{Q}}$ and $\mat{K}_{\mat{X}}$, we obtain $\mat{A}_{n_s}$, $\mat{B}_{n_s}$, and $\mat{P}_{n_s}$ using the corresponding algorithm. We can see that the relative errors (formulas on the right-hand side) drop quickly in the left plot as $n_s$ grows.}
+    \label{fig:leanvec_sample_sizes}
+\end{figure}
+
+\begin{figure}[t]
+    \centering
+    \includegraphics[width=\textwidth]{figures/sampling_comparison_leanvec_OOD.pdf}%
+    \caption{The brute-force search accuracy of LeanVec-ES is robust to subsampling the set of query vectors used for learning/training. Let $n_s$ be this query sample size. Some degradation can be perceived when using $n_s=D$ or $n_s=2D$ samples but it vanishes when using $n_s=4D$ samples or more. This result is in agreement with the quick convergence of the matrices $\mat{K}_{\mat{Q}}$ and $\mat{K}_{\mat{X}}$ defined in \cref{prob:leanvec_efficient} as $n_s$ grows.}
+    \label{fig:leanvec_sample_comparison}
+\end{figure}
+
+\begin{figure}[t]
+    \centering
+    \includegraphics[width=0.25\textwidth]{figures/search_leanvec_eig_joint_RQA-1M-OOD.pdf}%
+    \includegraphics[width=0.25\textwidth]{figures/search_leanvec_eig_joint_LAION-1M-OOD.pdf}%
+    \includegraphics[width=0.25\textwidth]{figures/search_leanvec_eig_joint_WIT-1M-OOD.pdf}%
+    \includegraphics[width=0.25\textwidth]{figures/search_leanvec_eig_joint_T2I-1M-OOD.pdf}%
+
+    \vspace{1em}
+
+    \begin{sideways}
+    \begin{footnotesize}
+        rqa-768-1M
+    \end{footnotesize}
+    \end{sideways}
+    \hfill
+    \includegraphics[width=0.97\textwidth]{figures/search_leanvec_eig_per_dim_RQA-1M-OOD.pdf}
+
+    \vspace{0.5em}
+
+    \begin{sideways}
+    \begin{footnotesize}
+        laion-512-1M
+    \end{footnotesize}
+    \end{sideways}
+    \hfill
+    \includegraphics[width=0.97\textwidth]{figures/search_leanvec_eig_per_dim_LAION-1M-OOD.pdf}
+
+    \vspace{0.5em}
+
+    \begin{sideways}
+    \begin{footnotesize}
+        wit-512-1M
+    \end{footnotesize}
+    \end{sideways}
+    \hfill
+    \includegraphics[width=0.97\textwidth]{figures/search_leanvec_eig_per_dim_WIT-1M-OOD.pdf}
+
+    \vspace{0.5em}
+
+    \begin{sideways}
+    \begin{footnotesize}
+        t2i-200-1M
+    \end{footnotesize}
+    \end{sideways}
+    \hfill
+    \includegraphics[width=0.97\textwidth]{figures/search_leanvec_eig_per_dim_T2I-1M-OOD.pdf}
+
+    \caption{The loss in \cref{prob:leanvec_loss_same_proj} is a smooth function of $\beta$ when $\mat{P} = \operatorname{eigsearch}(\beta)$ and empirically we observe that it has a unique minimizer (different for each $d$). \Cref{algo:leanvec_eig_search} finds the minimum (marked with a circle) of this loss using a derivative-free scalar minimization. We point out that the solutions with $\beta = 0$ and $\beta = 1$ correspond to the SVD of the query and database vectors, respectively.}
+    \label{fig:leanvec_eigsearch_continued}
+\end{figure}
+
+\begin{figure}
+    \centering
+    \includegraphics[width=0.25\textwidth]{figures/leanvec_algo_comparison_320_LAION-1M-OOD.pdf}
+    \includegraphics[width=0.25\textwidth]{figures/leanvec_algo_comparison_256_WIT-1M-OOD.pdf}
+    \includegraphics[width=0.25\textwidth]{figures/leanvec_algo_comparison_160_WIT-1M-OOD.pdf}
+
+    \includegraphics[width=0.25\textwidth]{figures/leanvec_algo_comparison_160_RQA-1M-OOD.pdf}
+    \includegraphics[width=0.25\textwidth]{figures/leanvec_algo_comparison_128_T2I-1M-OOD.pdf}
+    \includegraphics[width=0.25\textwidth]{figures/leanvec_algo_comparison_192_T2I-1M-OOD.pdf}
+
+    \caption{LeanVec-FW, LeanVec-ES, and SVD correspond to \cref{algo:leanvec}, to \cref{algo:leanvec_eig_search}, and to the algorithm in \cref{sec:pca}, respectively. LeanVec-ES+FW corresponds to initializating \cref{algo:leanvec} with the output of \cref{algo:leanvec_eig_search}. Although LeanVec-ES often yields a lower loss value than LeanVec-FW, their brute-force search performance are comparable. The behaviors of LeanVec-ES and LeanVec-ES+FW are almost indistinguishable across the board, bringing assurance about the good empirical performance of LeanVec-ES.}
+    \label{fig:algo_comparison}
+\end{figure}
+
+\end{document}

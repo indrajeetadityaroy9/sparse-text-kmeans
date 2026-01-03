@@ -378,6 +378,138 @@ public:
 #endif
     }
 
+    // ========================================================================
+    // RABITQ PHASE 1: Binary Encoding for XOR + PopCount Distance
+    // ========================================================================
+
+    /**
+     * Encode vector to BinaryCode (sign bits only).
+     *
+     * RABITQ OPTIMIZATION: Extracts only the sign bits for XOR + PopCount
+     * distance computation. This replaces the expensive SIMD Gather with
+     * pure bitwise operations.
+     *
+     * @param vec   Input vector (length >= dim_)
+     * @return      BinaryCode with packed sign bits
+     */
+    BinaryCode<K> encode_binary(const Float* vec) const {
+        return encode_binary_with_buffer(vec, buffer_.data());
+    }
+
+    /**
+     * Encode vector to BinaryCode using provided buffer.
+     * Thread-safe: Uses caller-provided buffer instead of shared member.
+     *
+     * @param vec     Input vector (length >= dim_)
+     * @param buffer  Work buffer (length >= padded_dim())
+     * @return        BinaryCode with packed sign bits
+     */
+    BinaryCode<K> encode_binary_with_buffer(const Float* vec, Float* buffer) const {
+        BinaryCode<K> binary;
+        binary.clear();
+
+        for (size_t r = 0; r < K; ++r) {
+            // Apply rotation
+            rotation_chain_.apply_copy(vec, buffer, r);
+
+            // Find argmax |buffer[i]|
+            size_t max_idx;
+            Float max_abs;
+            find_argmax_abs(buffer, rotation_chain_.padded_dim(), max_idx, max_abs);
+
+            // Extract sign bit: 1 if negative, 0 if positive
+            bool is_negative = (buffer[max_idx] < 0);
+            binary.set_sign(r, is_negative);
+        }
+
+        return binary;
+    }
+
+    /**
+     * Encode query for RaBitQ-style distance computation.
+     *
+     * Pre-computes C1, C2 scalars to avoid per-neighbor magnitude lookups.
+     * Distance formula: Dist = C1 + C2 * Hamming(query, node)
+     *
+     * ASSUMPTION: Normalized vectors (SIFT-1M, GloVe, etc.)
+     * For unnormalized data, add 8-bit magnitude interleaving.
+     *
+     * @param vec             Input vector (length >= dim_)
+     * @param avg_node_norm   Average norm of nodes in index (default: 1.0 for normalized)
+     * @return                RaBitQQuery with binary code and pre-computed scalars
+     */
+    RaBitQQuery<K> encode_rabitq_query(const Float* vec, float avg_node_norm = 1.0f) const {
+        return encode_rabitq_query_with_buffer(vec, buffer_.data(), avg_node_norm);
+    }
+
+    /**
+     * Encode query for RaBitQ using provided buffer.
+     * Thread-safe: Uses caller-provided buffer instead of shared member.
+     *
+     * @param vec             Input vector (length >= dim_)
+     * @param buffer          Work buffer (length >= padded_dim())
+     * @param avg_node_norm   Average norm of nodes in index
+     * @return                RaBitQQuery with binary code and pre-computed scalars
+     */
+    RaBitQQuery<K> encode_rabitq_query_with_buffer(const Float* vec, Float* buffer,
+                                                    float avg_node_norm = 1.0f) const {
+        RaBitQQuery<K> query;
+
+        // Encode binary (sign bits)
+        query.binary = encode_binary_with_buffer(vec, buffer);
+
+        // Compute query norm
+        float query_norm = 0.0f;
+        for (size_t i = 0; i < dim_; ++i) {
+            query_norm += vec[i] * vec[i];
+        }
+        query_norm = std::sqrt(query_norm);
+        query.query_norm = query_norm;
+
+        // Pre-compute RaBitQ scalars
+        // For normalized vectors with angular distance:
+        //   True distance ∝ 1 - cos(θ) ≈ θ²/2
+        //   Hamming distance ≈ K * θ / π  (approximation for small angles)
+        //
+        // Linear approximation: Dist = C1 + C2 * Hamming
+        //   C1: Base distance (constant offset)
+        //   C2: Scaling factor per Hamming bit
+        //
+        // Calibrated for typical K values:
+        query.c1 = 0.0f;  // Base distance (can be calibrated on training data)
+        query.c2 = 2.0f * query_norm * avg_node_norm / static_cast<float>(K);
+
+        return query;
+    }
+
+    /**
+     * Batch encode multiple vectors to BinaryCode.
+     *
+     * PARALLELIZED with OpenMP when CPHNSW_USE_OPENMP is defined.
+     *
+     * @param vecs      Input vectors (row-major, num_vecs x dim)
+     * @param num_vecs  Number of vectors
+     * @param binaries  Output binary codes (pre-allocated, size num_vecs)
+     */
+    void encode_binary_batch(const Float* vecs, size_t num_vecs,
+                              BinaryCode<K>* binaries) const {
+#ifdef CPHNSW_USE_OPENMP
+        #pragma omp parallel
+        {
+            std::vector<Float> local_buffer(rotation_chain_.padded_dim());
+
+            #pragma omp for schedule(static)
+            for (size_t i = 0; i < num_vecs; ++i) {
+                binaries[i] = encode_binary_with_buffer(vecs + i * dim_, local_buffer.data());
+            }
+        }
+#else
+        for (size_t i = 0; i < num_vecs; ++i) {
+            binaries[i] = encode_binary(vecs + i * dim_);
+        }
+#endif
+    }
+
 private:
     size_t dim_;
     RotationChain rotation_chain_;

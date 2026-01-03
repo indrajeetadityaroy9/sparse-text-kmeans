@@ -292,6 +292,60 @@ if(CPHNSW_BUILD_TESTS)
     else()
         message(STATUS "GTest not found, skipping tests")
     endif()
+
+    # Standalone test executables (no GTest dependency)
+    add_executable(test_flash_kernels
+        tests/unit/test_flash_kernels.cpp
+    )
+    target_link_libraries(test_flash_kernels PRIVATE cphnsw)
+    target_include_directories(test_flash_kernels PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+    )
+
+    # RaBitQ Phase 1 unit tests
+    add_executable(test_rabitq_distance
+        tests/unit/test_rabitq_distance.cpp
+    )
+    target_link_libraries(test_rabitq_distance PRIVATE cphnsw)
+    target_include_directories(test_rabitq_distance PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+    )
+
+    # Residual Quantization Phase 2 unit tests
+    add_executable(test_residual_distance
+        tests/unit/test_residual_distance.cpp
+    )
+    target_link_libraries(test_residual_distance PRIVATE cphnsw)
+    target_include_directories(test_residual_distance PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+    )
+
+    # Go/No-Go Verification (Phase 1 & 2 comprehensive check)
+    add_executable(test_go_nogo_verification
+        tests/unit/test_go_nogo_verification.cpp
+    )
+    target_link_libraries(test_go_nogo_verification PRIVATE cphnsw)
+    target_include_directories(test_go_nogo_verification PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+    )
+
+    # Recall Diagnostic (debug recall collapse)
+    add_executable(test_recall_diagnostic
+        tests/unit/test_recall_diagnostic.cpp
+    )
+    target_link_libraries(test_recall_diagnostic PRIVATE cphnsw)
+    target_include_directories(test_recall_diagnostic PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+    )
+
+    # Phase 2 Integration Test (compare P1 vs P2 recall)
+    add_executable(test_phase2_integration
+        tests/unit/test_phase2_integration.cpp
+    )
+    target_link_libraries(test_phase2_integration PRIVATE cphnsw)
+    target_include_directories(test_phase2_integration PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+    )
 endif()
 
 # Benchmarks

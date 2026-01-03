@@ -1255,4 +1255,605 @@ inline AsymmetricDist asymmetric_search_distance_ptr<uint8_t, 16>(
 }
 #endif
 
+// ============================================================================
+// RaBitQ-Style Binary Hamming Distance (Phase 1 Optimization)
+// ============================================================================
+
+/**
+ * RABITQ DISTANCE COMPUTATION (PhD Portfolio)
+ *
+ * Replaces expensive SIMD Gather instructions with pure bitwise operations:
+ * - Current: _mm256_i32gather_ps = 10-11 cycles per instruction
+ * - New: XOR + PopCount = 1-2 cycles total
+ *
+ * Distance formula (for normalized vectors):
+ *   Dist = C1 + C2 * Hamming(query, node)
+ *
+ * Where C1, C2 are pre-computed ONCE per query (no per-neighbor lookups).
+ */
+
+// ============================================================================
+// Scalar Reference Implementation (Development Step 1)
+// ============================================================================
+
+/**
+ * Scalar Hamming distance between two BinaryCode structures.
+ * Uses software popcount - portable but slow.
+ * Used for correctness verification before SIMD optimization.
+ */
+template <size_t K>
+inline uint32_t rabitq_hamming_scalar(const BinaryCode<K>& a,
+                                       const BinaryCode<K>& b) {
+    uint32_t dist = 0;
+    for (size_t i = 0; i < BinaryCode<K>::NUM_WORDS; ++i) {
+        uint64_t xor_result = a.signs[i] ^ b.signs[i];
+#if CPHNSW_HAS_POPCNT
+        dist += static_cast<uint32_t>(__builtin_popcountll(xor_result));
+#else
+        dist += static_cast<uint32_t>(detail::popcount64_fallback(xor_result));
+#endif
+    }
+    return dist;
+}
+
+/**
+ * Scalar RaBitQ distance using pre-computed scalars.
+ * Dist = c1 + c2 * hamming_distance
+ *
+ * This is the CORRECT approach - no per-neighbor magnitude lookups!
+ */
+template <size_t K>
+inline AsymmetricDist rabitq_distance_scalar(const RaBitQQuery<K>& query,
+                                              const BinaryCode<K>& node) {
+    uint32_t hamming = rabitq_hamming_scalar(query.binary, node);
+    return query.c1 + query.c2 * static_cast<float>(hamming);
+}
+
+// ============================================================================
+// AVX-512 Optimized Implementation
+// ============================================================================
+
+#if CPHNSW_HAS_AVX512
+
+/**
+ * Harley-Seal software popcount for AVX-512 (Skylake-X fallback).
+ * Used when VPOPCNTDQ extension is not available.
+ * Expected speedup: 2x over Gather (vs 3x with native VPOPCNTDQ).
+ */
+#ifndef __AVX512VPOPCNTDQ__
+inline __m512i harley_seal_popcnt_epi64(__m512i v) {
+    // Split into 256-bit halves
+    __m256i lo = _mm512_extracti64x4_epi64(v, 0);
+    __m256i hi = _mm512_extracti64x4_epi64(v, 1);
+
+    // Use scalar popcount for each 64-bit word
+    alignas(64) uint64_t arr[8];
+    _mm256_storeu_si256(reinterpret_cast<__m256i*>(arr), lo);
+    _mm256_storeu_si256(reinterpret_cast<__m256i*>(arr + 4), hi);
+
+    for (int i = 0; i < 8; ++i) {
+        arr[i] = static_cast<uint64_t>(__builtin_popcountll(arr[i]));
+    }
+
+    return _mm512_load_si512(arr);
+}
+#endif
+
+/**
+ * BATCH KERNEL: Process 8 neighbors in parallel with VERTICAL ACCUMULATION.
+ *
+ * CRITICAL: Do NOT reduce after each neighbor - kills instruction throughput!
+ * Horizontal reductions are slow (3-6 cycles) and break the pipeline.
+ *
+ * Memory layout requirement: SoA transposed
+ *   signs_transposed[word][neighbor] allows loading word 0 for all 8 neighbors
+ *   with a single _mm512_loadu_si512 instruction.
+ *
+ * @param query_signs       Query binary code (K/64 words)
+ * @param signs_transposed  SoA layout [NUM_WORDS][64] for up to 64 neighbors
+ * @param num_words         Number of 64-bit words per code (K/64)
+ * @param neighbor_offset   Start index in the block (0, 8, 16, ...)
+ * @param out_distances     Output array for 8 Hamming distances
+ */
+template <size_t K>
+inline void rabitq_hamming_batch8_avx512(
+    const uint64_t* query_signs,
+    const uint64_t signs_transposed[][64],
+    size_t neighbor_offset,
+    uint32_t* out_distances) {
+
+    constexpr size_t NUM_WORDS = (K + 63) / 64;
+
+    // Accumulator for 8 neighbors (stays in register across all K words)
+    __m512i sums = _mm512_setzero_si512();
+
+    // VERTICAL ACCUMULATION: Loop through K words WITHOUT reducing
+    for (size_t w = 0; w < NUM_WORDS; ++w) {
+        // 1. Broadcast query word (same for all 8 neighbors)
+        __m512i q = _mm512_set1_epi64(static_cast<long long>(query_signs[w]));
+
+        // 2. Load 8 neighbors' word w (contiguous due to SoA layout)
+        __m512i n = _mm512_loadu_si512(&signs_transposed[w][neighbor_offset]);
+
+        // 3. XOR to find differing bits
+        __m512i xor_result = _mm512_xor_si512(q, n);
+
+        // 4. PopCount (use native or Harley-Seal fallback)
+#ifdef __AVX512VPOPCNTDQ__
+        __m512i popc = _mm512_popcnt_epi64(xor_result);
+#else
+        __m512i popc = harley_seal_popcnt_epi64(xor_result);
+#endif
+
+        // 5. Accumulate (no reduction yet!)
+        sums = _mm512_add_epi64(sums, popc);
+    }
+
+    // ONLY NOW extract 8 distances (single horizontal operation at end)
+    alignas(64) uint64_t results[8];
+    _mm512_storeu_si512(results, sums);
+
+    for (int i = 0; i < 8; ++i) {
+        out_distances[i] = static_cast<uint32_t>(results[i]);
+    }
+}
+
+/**
+ * Process all neighbors in a block using batch8 kernel.
+ * Handles the full 64-neighbor block with 8 iterations.
+ */
+template <size_t K>
+inline void rabitq_hamming_block_avx512(
+    const RaBitQQuery<K>& query,
+    const uint64_t signs_transposed[][64],
+    size_t neighbor_count,
+    AsymmetricDist* out_distances) {
+
+    // Process in batches of 8
+    alignas(64) uint32_t batch_hamming[8];
+
+    for (size_t offset = 0; offset < neighbor_count; offset += 8) {
+        size_t batch_size = std::min(size_t(8), neighbor_count - offset);
+
+        rabitq_hamming_batch8_avx512<K>(
+            query.binary.signs,
+            signs_transposed,
+            offset,
+            batch_hamming);
+
+        // Convert Hamming to final distance using pre-computed scalars
+        for (size_t i = 0; i < batch_size; ++i) {
+            out_distances[offset + i] =
+                query.c1 + query.c2 * static_cast<float>(batch_hamming[i]);
+        }
+    }
+}
+
+#endif  // CPHNSW_HAS_AVX512
+
+// ============================================================================
+// AVX2 Fallback Implementation (for dev laptops)
+// ============================================================================
+
+#if CPHNSW_HAS_AVX2 && !CPHNSW_HAS_AVX512
+
+/**
+ * AVX2 batch kernel - processes 4 neighbors at a time.
+ * Used on machines without AVX-512 support.
+ */
+template <size_t K>
+inline void rabitq_hamming_batch4_avx2(
+    const uint64_t* query_signs,
+    const uint64_t signs_transposed[][64],
+    size_t neighbor_offset,
+    uint32_t* out_distances) {
+
+    constexpr size_t NUM_WORDS = (K + 63) / 64;
+
+    // Accumulator for 4 neighbors
+    __m256i sums = _mm256_setzero_si256();
+
+    for (size_t w = 0; w < NUM_WORDS; ++w) {
+        // Broadcast query word
+        __m256i q = _mm256_set1_epi64x(static_cast<long long>(query_signs[w]));
+
+        // Load 4 neighbors' word w
+        __m256i n = _mm256_loadu_si256(
+            reinterpret_cast<const __m256i*>(&signs_transposed[w][neighbor_offset]));
+
+        // XOR
+        __m256i xor_result = _mm256_xor_si256(q, n);
+
+        // Software popcount per 64-bit word
+        alignas(32) uint64_t arr[4];
+        _mm256_storeu_si256(reinterpret_cast<__m256i*>(arr), xor_result);
+
+        alignas(32) uint64_t popc_arr[4];
+        for (int i = 0; i < 4; ++i) {
+            popc_arr[i] = static_cast<uint64_t>(__builtin_popcountll(arr[i]));
+        }
+
+        __m256i popc = _mm256_load_si256(reinterpret_cast<const __m256i*>(popc_arr));
+        sums = _mm256_add_epi64(sums, popc);
+    }
+
+    // Extract results
+    alignas(32) uint64_t results[4];
+    _mm256_storeu_si256(reinterpret_cast<__m256i*>(results), sums);
+
+    for (int i = 0; i < 4; ++i) {
+        out_distances[i] = static_cast<uint32_t>(results[i]);
+    }
+}
+
+#endif  // CPHNSW_HAS_AVX2 && !CPHNSW_HAS_AVX512
+
+// ============================================================================
+// Residual Quantization Distance (Phase 2 Optimization)
+// ============================================================================
+
+/**
+ * RESIDUAL DISTANCE COMPUTATION (PhD Portfolio)
+ *
+ * Phase 2 optimization: Recover precision lost in Phase 1's symmetric
+ * Hamming distance by adding residual quantization.
+ *
+ * Key insight: Keep everything in INTEGER registers until final conversion.
+ * Float conversions are expensive (~5 cycles each).
+ *
+ * Combined distance formula (integer-only):
+ *   combined = (primary_hamming << Shift) + residual_hamming
+ *
+ * Where Shift controls the relative weighting:
+ *   - Shift=1: alpha=2/3, beta=1/3 (2:1)
+ *   - Shift=2: alpha=4/5, beta=1/5 (4:1) [DEFAULT]
+ *   - Shift=3: alpha=8/9, beta=1/9 (8:1)
+ *   - Shift=4: alpha=16/17, beta=1/17 (16:1)
+ *
+ * TUNING: vpsll (bit shift) is 1 cycle - tuning is essentially free.
+ */
+
+// ============================================================================
+// Scalar Reference Implementation (for correctness verification)
+// ============================================================================
+
+/**
+ * Scalar residual Hamming distance.
+ * Computes combined distance using bit-shift weighting.
+ *
+ * @param q_prim  Query primary code (K bits)
+ * @param q_res   Query residual code (R bits)
+ * @param n_prim  Node primary code (K bits)
+ * @param n_res   Node residual code (R bits)
+ * @param Shift   Bit-shift for weighting (template parameter)
+ * @return        Combined distance as uint32_t
+ */
+template <size_t K, size_t R, int Shift = 2>
+inline uint32_t residual_distance_integer_scalar(
+    const BinaryCode<K>& q_prim, const BinaryCode<R>& q_res,
+    const BinaryCode<K>& n_prim, const BinaryCode<R>& n_res) {
+
+    // Compute primary Hamming distance
+    uint32_t prim_dist = 0;
+    for (size_t i = 0; i < BinaryCode<K>::NUM_WORDS; ++i) {
+        uint64_t xor_result = q_prim.signs[i] ^ n_prim.signs[i];
+#if CPHNSW_HAS_POPCNT
+        prim_dist += static_cast<uint32_t>(__builtin_popcountll(xor_result));
+#else
+        prim_dist += static_cast<uint32_t>(detail::popcount64_fallback(xor_result));
+#endif
+    }
+
+    // Compute residual Hamming distance
+    uint32_t res_dist = 0;
+    for (size_t i = 0; i < BinaryCode<R>::NUM_WORDS; ++i) {
+        uint64_t xor_result = q_res.signs[i] ^ n_res.signs[i];
+#if CPHNSW_HAS_POPCNT
+        res_dist += static_cast<uint32_t>(__builtin_popcountll(xor_result));
+#else
+        res_dist += static_cast<uint32_t>(detail::popcount64_fallback(xor_result));
+#endif
+    }
+
+    // Combine with bit-shift weighting (integer-only!)
+    return (prim_dist << Shift) + res_dist;
+}
+
+/**
+ * Scalar residual distance using ResidualQuery structure.
+ * Converts to float only at the very end.
+ */
+template <size_t K, size_t R, int Shift = 2>
+inline AsymmetricDist residual_distance_scalar(
+    const ResidualQuery<K, R>& query,
+    const ResidualBinaryCode<K, R>& node) {
+
+    uint32_t combined = residual_distance_integer_scalar<K, R, Shift>(
+        query.primary, query.residual,
+        node.primary, node.residual);
+
+    // Convert to float ONCE at the end
+    return query.base + query.scale * static_cast<float>(combined);
+}
+
+// ============================================================================
+// AVX-512 Optimized Residual Distance
+// ============================================================================
+
+#if CPHNSW_HAS_AVX512
+
+/**
+ * AVX-512 residual distance for single query-node pair.
+ *
+ * Computes both primary and residual Hamming in parallel,
+ * then combines with bit-shift weighting.
+ *
+ * NOTE: For K=64, R=32, this uses 1+1=2 words, fits in registers.
+ */
+template <size_t K, size_t R, int Shift = 2>
+inline uint32_t residual_distance_integer_avx512(
+    const BinaryCode<K>& q_prim, const BinaryCode<R>& q_res,
+    const BinaryCode<K>& n_prim, const BinaryCode<R>& n_res) {
+
+    constexpr size_t PRIM_WORDS = BinaryCode<K>::NUM_WORDS;
+    constexpr size_t RES_WORDS = BinaryCode<R>::NUM_WORDS;
+
+    uint32_t prim_dist = 0;
+    uint32_t res_dist = 0;
+
+    // Process primary code words
+    for (size_t w = 0; w < PRIM_WORDS; ++w) {
+        uint64_t xor_result = q_prim.signs[w] ^ n_prim.signs[w];
+#if defined(__AVX512VPOPCNTDQ__)
+        // Use AVX-512 VPOPCNTDQ if available
+        __m128i v = _mm_set_epi64x(0, static_cast<long long>(xor_result));
+        __m128i popc = _mm_popcnt_epi64(v);
+        prim_dist += static_cast<uint32_t>(_mm_extract_epi64(popc, 0));
+#elif CPHNSW_HAS_POPCNT
+        prim_dist += static_cast<uint32_t>(__builtin_popcountll(xor_result));
+#else
+        prim_dist += static_cast<uint32_t>(detail::popcount64_fallback(xor_result));
+#endif
+    }
+
+    // Process residual code words
+    for (size_t w = 0; w < RES_WORDS; ++w) {
+        uint64_t xor_result = q_res.signs[w] ^ n_res.signs[w];
+#if defined(__AVX512VPOPCNTDQ__)
+        __m128i v = _mm_set_epi64x(0, static_cast<long long>(xor_result));
+        __m128i popc = _mm_popcnt_epi64(v);
+        res_dist += static_cast<uint32_t>(_mm_extract_epi64(popc, 0));
+#elif CPHNSW_HAS_POPCNT
+        res_dist += static_cast<uint32_t>(__builtin_popcountll(xor_result));
+#else
+        res_dist += static_cast<uint32_t>(detail::popcount64_fallback(xor_result));
+#endif
+    }
+
+    // Combine with bit-shift weighting
+    return (prim_dist << Shift) + res_dist;
+}
+
+/**
+ * AVX-512 batch residual distance - processes 8 neighbors at once.
+ *
+ * Uses SoA transposed layout for both primary and residual codes.
+ * Computes combined distance for 8 neighbors in parallel.
+ *
+ * Memory layout requirement:
+ *   primary_transposed[PRIM_WORDS][64] - primary signs in SoA
+ *   residual_transposed[RES_WORDS][64] - residual signs in SoA
+ *
+ * @param query             ResidualQuery with primary/residual binary codes
+ * @param prim_transposed   Primary signs in SoA layout [PRIM_WORDS][64]
+ * @param res_transposed    Residual signs in SoA layout [RES_WORDS][64]
+ * @param neighbor_offset   Starting neighbor index (0, 8, 16, ...)
+ * @param out_distances     Output array for 8 combined distances
+ */
+template <size_t K, size_t R, int Shift = 2>
+inline void residual_hamming_batch8_avx512(
+    const ResidualQuery<K, R>& query,
+    const uint64_t prim_transposed[][64],
+    const uint64_t res_transposed[][64],
+    size_t neighbor_offset,
+    uint32_t* out_combined) {
+
+    constexpr size_t PRIM_WORDS = BinaryCode<K>::NUM_WORDS;
+    constexpr size_t RES_WORDS = BinaryCode<R>::NUM_WORDS;
+
+    // Accumulators for primary and residual (8 neighbors each)
+    __m512i prim_sums = _mm512_setzero_si512();
+    __m512i res_sums = _mm512_setzero_si512();
+
+    // Process primary code words
+    for (size_t w = 0; w < PRIM_WORDS; ++w) {
+        __m512i q = _mm512_set1_epi64(static_cast<long long>(query.primary.signs[w]));
+        __m512i n = _mm512_loadu_si512(&prim_transposed[w][neighbor_offset]);
+        __m512i xor_result = _mm512_xor_si512(q, n);
+
+#ifdef __AVX512VPOPCNTDQ__
+        __m512i popc = _mm512_popcnt_epi64(xor_result);
+#else
+        __m512i popc = harley_seal_popcnt_epi64(xor_result);
+#endif
+        prim_sums = _mm512_add_epi64(prim_sums, popc);
+    }
+
+    // Process residual code words
+    for (size_t w = 0; w < RES_WORDS; ++w) {
+        __m512i q = _mm512_set1_epi64(static_cast<long long>(query.residual.signs[w]));
+        __m512i n = _mm512_loadu_si512(&res_transposed[w][neighbor_offset]);
+        __m512i xor_result = _mm512_xor_si512(q, n);
+
+#ifdef __AVX512VPOPCNTDQ__
+        __m512i popc = _mm512_popcnt_epi64(xor_result);
+#else
+        __m512i popc = harley_seal_popcnt_epi64(xor_result);
+#endif
+        res_sums = _mm512_add_epi64(res_sums, popc);
+    }
+
+    // Combine with bit-shift weighting: (primary << Shift) + residual
+    __m512i shifted_prim = _mm512_slli_epi64(prim_sums, Shift);
+    __m512i combined = _mm512_add_epi64(shifted_prim, res_sums);
+
+    // Extract 8 results
+    alignas(64) uint64_t results[8];
+    _mm512_storeu_si512(results, combined);
+
+    for (int i = 0; i < 8; ++i) {
+        out_combined[i] = static_cast<uint32_t>(results[i]);
+    }
+}
+
+/**
+ * Process full residual neighbor block using batch8 kernel.
+ *
+ * Converts combined integer distances to float at the very end.
+ *
+ * @param query              ResidualQuery structure
+ * @param prim_transposed    Primary signs SoA [PRIM_WORDS][64]
+ * @param res_transposed     Residual signs SoA [RES_WORDS][64]
+ * @param neighbor_count     Number of neighbors to process
+ * @param out_distances      Output float distances
+ */
+template <size_t K, size_t R, int Shift = 2>
+inline void residual_distance_block_avx512(
+    const ResidualQuery<K, R>& query,
+    const uint64_t prim_transposed[][64],
+    const uint64_t res_transposed[][64],
+    size_t neighbor_count,
+    AsymmetricDist* out_distances) {
+
+    alignas(64) uint32_t batch_combined[8];
+
+    for (size_t offset = 0; offset < neighbor_count; offset += 8) {
+        size_t batch_size = std::min(size_t(8), neighbor_count - offset);
+
+        residual_hamming_batch8_avx512<K, R, Shift>(
+            query,
+            prim_transposed,
+            res_transposed,
+            offset,
+            batch_combined);
+
+        // Convert to float ONCE at the end
+        for (size_t i = 0; i < batch_size; ++i) {
+            out_distances[offset + i] =
+                query.base + query.scale * static_cast<float>(batch_combined[i]);
+        }
+    }
+}
+
+#endif  // CPHNSW_HAS_AVX512
+
+// ============================================================================
+// AVX2 Fallback for Residual Distance
+// ============================================================================
+
+#if CPHNSW_HAS_AVX2 && !CPHNSW_HAS_AVX512
+
+/**
+ * AVX2 batch residual distance - processes 4 neighbors at once.
+ */
+template <size_t K, size_t R, int Shift = 2>
+inline void residual_hamming_batch4_avx2(
+    const ResidualQuery<K, R>& query,
+    const uint64_t prim_transposed[][64],
+    const uint64_t res_transposed[][64],
+    size_t neighbor_offset,
+    uint32_t* out_combined) {
+
+    constexpr size_t PRIM_WORDS = BinaryCode<K>::NUM_WORDS;
+    constexpr size_t RES_WORDS = BinaryCode<R>::NUM_WORDS;
+
+    __m256i prim_sums = _mm256_setzero_si256();
+    __m256i res_sums = _mm256_setzero_si256();
+
+    // Process primary code words
+    for (size_t w = 0; w < PRIM_WORDS; ++w) {
+        __m256i q = _mm256_set1_epi64x(static_cast<long long>(query.primary.signs[w]));
+        __m256i n = _mm256_loadu_si256(
+            reinterpret_cast<const __m256i*>(&prim_transposed[w][neighbor_offset]));
+        __m256i xor_result = _mm256_xor_si256(q, n);
+
+        // Software popcount
+        alignas(32) uint64_t arr[4];
+        _mm256_storeu_si256(reinterpret_cast<__m256i*>(arr), xor_result);
+        alignas(32) uint64_t popc_arr[4];
+        for (int i = 0; i < 4; ++i) {
+            popc_arr[i] = static_cast<uint64_t>(__builtin_popcountll(arr[i]));
+        }
+        __m256i popc = _mm256_load_si256(reinterpret_cast<const __m256i*>(popc_arr));
+        prim_sums = _mm256_add_epi64(prim_sums, popc);
+    }
+
+    // Process residual code words
+    for (size_t w = 0; w < RES_WORDS; ++w) {
+        __m256i q = _mm256_set1_epi64x(static_cast<long long>(query.residual.signs[w]));
+        __m256i n = _mm256_loadu_si256(
+            reinterpret_cast<const __m256i*>(&res_transposed[w][neighbor_offset]));
+        __m256i xor_result = _mm256_xor_si256(q, n);
+
+        alignas(32) uint64_t arr[4];
+        _mm256_storeu_si256(reinterpret_cast<__m256i*>(arr), xor_result);
+        alignas(32) uint64_t popc_arr[4];
+        for (int i = 0; i < 4; ++i) {
+            popc_arr[i] = static_cast<uint64_t>(__builtin_popcountll(arr[i]));
+        }
+        __m256i popc = _mm256_load_si256(reinterpret_cast<const __m256i*>(popc_arr));
+        res_sums = _mm256_add_epi64(res_sums, popc);
+    }
+
+    // Combine with bit-shift weighting
+    __m256i shifted_prim = _mm256_slli_epi64(prim_sums, Shift);
+    __m256i combined = _mm256_add_epi64(shifted_prim, res_sums);
+
+    alignas(32) uint64_t results[4];
+    _mm256_storeu_si256(reinterpret_cast<__m256i*>(results), combined);
+
+    for (int i = 0; i < 4; ++i) {
+        out_combined[i] = static_cast<uint32_t>(results[i]);
+    }
+}
+
+#endif  // CPHNSW_HAS_AVX2 && !CPHNSW_HAS_AVX512
+
+// ============================================================================
+// Dispatcher for Residual Distance
+// ============================================================================
+
+/**
+ * Residual distance with automatic SIMD dispatch.
+ * Chooses best implementation based on available hardware.
+ */
+template <size_t K, size_t R, int Shift = 2>
+inline AsymmetricDist residual_distance(
+    const ResidualQuery<K, R>& query,
+    const ResidualBinaryCode<K, R>& node) {
+
+#if CPHNSW_HAS_AVX512
+    uint32_t combined = residual_distance_integer_avx512<K, R, Shift>(
+        query.primary, query.residual,
+        node.primary, node.residual);
+#else
+    uint32_t combined = residual_distance_integer_scalar<K, R, Shift>(
+        query.primary, query.residual,
+        node.primary, node.residual);
+#endif
+
+    return query.base + query.scale * static_cast<float>(combined);
+}
+
+// Common type aliases for residual distance
+template <int Shift = 2>
+using ResidualDistanceFunc64_32 = AsymmetricDist(*)(
+    const ResidualQuery<64, 32>&,
+    const ResidualBinaryCode<64, 32>&);
+
+template <int Shift = 2>
+using ResidualDistanceFunc32_16 = AsymmetricDist(*)(
+    const ResidualQuery<32, 16>&,
+    const ResidualBinaryCode<32, 16>&);
+
 }  // namespace cphnsw

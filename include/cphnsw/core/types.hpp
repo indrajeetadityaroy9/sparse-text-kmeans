@@ -104,6 +104,205 @@ using CPCode16 = CPCode<uint16_t, 16>;  // For d > 128 (GIST-1M)
 using CPCode32 = CPCode<uint8_t, 32>;   // Higher precision variant
 using CPCode64 = CPCode<uint8_t, 64>;   // Highest precision variant
 
+// ============================================================================
+// RaBitQ-Style Binary Code Structures (Phase 1 Optimization)
+// ============================================================================
+
+/**
+ * BinaryCode: Packed sign bits for XOR + PopCount distance computation.
+ *
+ * RABITQ OPTIMIZATION (PhD Portfolio):
+ * Replace expensive SIMD Gather instructions (10-11 cycles) with pure
+ * bitwise operations: XOR + PopCount (1-2 cycles total).
+ *
+ * Memory layout: K sign bits packed into uint64_t words.
+ * - K=64: 1 word (8 bytes)
+ * - K=32: 1 word (4 bytes used, padded to 8)
+ *
+ * CRITICAL: This structure must be 64-byte aligned for AVX-512 loads.
+ */
+template <size_t K>
+struct alignas(64) BinaryCode {
+    static constexpr size_t NUM_WORDS = (K + 63) / 64;
+
+    /// Packed sign bits: bit i = 1 if rotation i has negative sign
+    uint64_t signs[NUM_WORDS];
+
+    /// Clear all bits
+    void clear() {
+        for (size_t i = 0; i < NUM_WORDS; ++i) {
+            signs[i] = 0;
+        }
+    }
+
+    /// Set sign bit for rotation r
+    void set_sign(size_t r, bool is_negative) {
+        if (is_negative) {
+            signs[r / 64] |= (1ULL << (r % 64));
+        }
+    }
+
+    /// Get sign bit for rotation r
+    bool get_sign(size_t r) const {
+        return (signs[r / 64] >> (r % 64)) & 1;
+    }
+};
+
+/**
+ * RaBitQQuery: Query structure for RaBitQ-style distance computation.
+ *
+ * CRITICAL INSIGHT (Avoiding Hidden Gather Trap):
+ * Pre-compute C1, C2 scalars ONCE per query. The distance formula becomes:
+ *   Dist = C1 + C2 * Hamming(query, node)
+ *
+ * This eliminates per-neighbor magnitude lookups inside the hot loop.
+ *
+ * ASSUMPTION: Normalized vectors (SIFT-1M, GloVe, etc.)
+ * For unnormalized data, see thesis defense statement in plan.
+ */
+template <size_t K>
+struct RaBitQQuery {
+    /// Binary code (packed sign bits)
+    BinaryCode<K> binary;
+
+    /// Pre-computed scalar: related to query norm and average node norm
+    /// Dist = c1 + c2 * hamming_distance
+    float c1;
+
+    /// Pre-computed scaling factor
+    float c2;
+
+    /// Original query norm (for reranking if needed)
+    float query_norm;
+};
+
+// Common BinaryCode type aliases
+using BinaryCode32 = BinaryCode<32>;
+using BinaryCode64 = BinaryCode<64>;
+using RaBitQQuery32 = RaBitQQuery<32>;
+using RaBitQQuery64 = RaBitQQuery<64>;
+
+// ============================================================================
+// Residual Quantization Structures (Phase 2 Optimization)
+// ============================================================================
+
+/**
+ * ResidualBinaryCode: Primary + Residual codes for improved precision.
+ *
+ * PHASE 2 OPTIMIZATION (PhD Portfolio):
+ * Phase 1's symmetric Hamming distance causes recall drop (~10-15%).
+ * Residual quantization recovers this by encoding the reconstruction error.
+ *
+ * Algorithm:
+ *   1. Encode primary code from original vector
+ *   2. Approximate reconstruction from primary code
+ *   3. Compute residual = original - reconstructed
+ *   4. Encode residual code from residual vector
+ *
+ * Distance formula (integer-only until final conversion):
+ *   Combined = (primary_hamming << Shift) + residual_hamming
+ *
+ * Template parameters:
+ * - K: Primary code width (e.g., 64 bits)
+ * - R: Residual code width (typically K/2, e.g., 32 bits)
+ *
+ * Memory: (K + R + 63) / 64 * 8 bytes per node
+ * Example: K=64, R=32 => 16 bytes per node
+ */
+template <size_t K, size_t R = K / 2>
+struct ResidualBinaryCode {
+    static constexpr size_t PRIMARY_WORDS = (K + 63) / 64;
+    static constexpr size_t RESIDUAL_WORDS = (R + 63) / 64;
+
+    /// Primary binary code (K sign bits)
+    BinaryCode<K> primary;
+
+    /// Residual binary code (R sign bits)
+    BinaryCode<R> residual;
+
+    /// Clear all bits
+    void clear() {
+        primary.clear();
+        residual.clear();
+    }
+};
+
+/**
+ * ResidualQuery: Query structure for residual distance computation.
+ *
+ * Contains both primary and residual binary codes, plus pre-computed
+ * scalars for the combined distance formula.
+ *
+ * CRITICAL: Uses integer-only distance computation until final conversion.
+ * This avoids expensive float conversions in the hot loop.
+ */
+template <size_t K, size_t R = K / 2>
+struct ResidualQuery {
+    /// Primary binary code
+    BinaryCode<K> primary;
+
+    /// Residual binary code
+    BinaryCode<R> residual;
+
+    /// Pre-computed scalar for final distance conversion
+    /// Final distance = base + scale * combined_hamming
+    float base;
+    float scale;
+
+    /// Query norm (for reranking if needed)
+    float query_norm;
+};
+
+/**
+ * Bit-shift weighting template for residual distance.
+ *
+ * TUNABLE WEIGHTING (PhD Portfolio):
+ * The relative importance of primary vs residual is controlled by bit shift.
+ *
+ * | Shift | Alpha (Primary) | Beta (Residual) | Ratio |
+ * |-------|-----------------|-----------------|-------|
+ * |   1   |      2/3        |      1/3        |  2:1  |
+ * |   2   |      4/5        |      1/5        |  4:1  |
+ * |   3   |      8/9        |      1/9        |  8:1  |
+ * |   4   |     16/17       |     1/17        | 16:1  |
+ *
+ * Recommendation by K/R ratio:
+ * - K=64, R=32: Shift=2 (4:1)
+ * - K=64, R=16: Shift=3 (8:1)
+ * - K=32, R=32: Shift=1 (2:1)
+ * - K=32, R=16: Shift=2 (4:1)
+ *
+ * PERFORMANCE: vpsll (bit shift) is 1 cycle, tuning is free.
+ */
+template <int Shift = 2>
+struct ResidualWeighting {
+    static constexpr int SHIFT = Shift;
+
+    /// Combine primary and residual Hamming distances (integer-only)
+    static constexpr uint32_t combine(uint32_t primary, uint32_t residual) {
+        return (primary << Shift) + residual;
+    }
+
+    /// Effective weight for primary distance
+    static constexpr float primary_weight() {
+        return static_cast<float>(1 << Shift) / static_cast<float>((1 << Shift) + 1);
+    }
+
+    /// Effective weight for residual distance
+    static constexpr float residual_weight() {
+        return 1.0f / static_cast<float>((1 << Shift) + 1);
+    }
+};
+
+// Common residual type aliases
+using ResidualBinaryCode64_32 = ResidualBinaryCode<64, 32>;
+using ResidualBinaryCode32_16 = ResidualBinaryCode<32, 16>;
+using ResidualQuery64_32 = ResidualQuery<64, 32>;
+using ResidualQuery32_16 = ResidualQuery<32, 16>;
+
+// Default weighting (Shift=2 for 4:1 primary:residual ratio)
+using DefaultResidualWeighting = ResidualWeighting<2>;
+
 /**
  * CPQuery: Query-time structure for asymmetric distance computation.
  * NOT stored in the index - only used during search.

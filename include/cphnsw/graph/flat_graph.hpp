@@ -132,9 +132,32 @@ struct alignas(FLASH_CACHE_LINE) NeighborBlock {
     /// This enables contiguous loads of the same component across all neighbors
     ComponentT codes_transposed[K][FLASH_MAX_M];
 
-    /// TRANSPOSED neighbor magnitudes for RaBitQ-style distance (NEW)
+    /// TRANSPOSED neighbor magnitudes for RaBitQ-style distance
     /// Layout: magnitudes_transposed[component_idx][neighbor_idx]
     uint8_t magnitudes_transposed[K][FLASH_MAX_M];
+
+    // ========================================================================
+    // RABITQ PHASE 1: Binary Sign Storage for XOR + PopCount Distance
+    // ========================================================================
+
+    /// Number of 64-bit words needed to store K sign bits
+    static constexpr size_t SIGN_WORDS = (K + 63) / 64;
+
+    /// TRANSPOSED binary signs for RaBitQ XOR + PopCount distance
+    /// Layout: signs_transposed[word_idx][neighbor_idx]
+    ///
+    /// CRITICAL: SoA transposed layout enables batch AVX-512 processing:
+    ///   _mm512_loadu_si512(&signs_transposed[w][0]) loads word w for 8 neighbors
+    ///
+    /// Example for K=64 (1 word per neighbor):
+    ///   signs_transposed[0][0..63] = word 0 for all 64 neighbors (contiguous!)
+    ///
+    /// Memory: SIGN_WORDS * 64 * 8 bytes = 512 bytes for K=64
+    alignas(64) uint64_t signs_transposed[SIGN_WORDS][FLASH_MAX_M];
+
+    /// Cached norms for RaBitQ C1 pre-computation (per neighbor)
+    /// Used with normalized assumption: C1 = -2 * ||q|| * node_norm
+    float cached_norms[FLASH_MAX_M];
 
     /// Cached distances (negative dot product) for O(1) pruning decisions
     float distances[FLASH_MAX_M];
@@ -158,6 +181,11 @@ struct alignas(FLASH_CACHE_LINE) NeighborBlock {
             std::fill(std::begin(codes_transposed[k]), std::end(codes_transposed[k]), ComponentT(0));
             std::fill(std::begin(magnitudes_transposed[k]), std::end(magnitudes_transposed[k]), uint8_t(0));
         }
+        // Initialize RaBitQ binary signs
+        for (size_t w = 0; w < SIGN_WORDS; ++w) {
+            std::fill(std::begin(signs_transposed[w]), std::end(signs_transposed[w]), uint64_t(0));
+        }
+        std::fill(std::begin(cached_norms), std::end(cached_norms), 1.0f);  // Default normalized
         std::fill(std::begin(distances), std::end(distances), std::numeric_limits<float>::max());
     }
 
@@ -170,6 +198,12 @@ struct alignas(FLASH_CACHE_LINE) NeighborBlock {
             std::copy(std::begin(other.magnitudes_transposed[k]), std::end(other.magnitudes_transposed[k]),
                       std::begin(magnitudes_transposed[k]));
         }
+        // Copy RaBitQ binary signs
+        for (size_t w = 0; w < SIGN_WORDS; ++w) {
+            std::copy(std::begin(other.signs_transposed[w]), std::end(other.signs_transposed[w]),
+                      std::begin(signs_transposed[w]));
+        }
+        std::copy(std::begin(other.cached_norms), std::end(other.cached_norms), std::begin(cached_norms));
         std::copy(std::begin(other.distances), std::end(other.distances), std::begin(distances));
     }
 
@@ -182,6 +216,12 @@ struct alignas(FLASH_CACHE_LINE) NeighborBlock {
             std::copy(std::begin(other.magnitudes_transposed[k]), std::end(other.magnitudes_transposed[k]),
                       std::begin(magnitudes_transposed[k]));
         }
+        // Move RaBitQ binary signs
+        for (size_t w = 0; w < SIGN_WORDS; ++w) {
+            std::copy(std::begin(other.signs_transposed[w]), std::end(other.signs_transposed[w]),
+                      std::begin(signs_transposed[w]));
+        }
+        std::copy(std::begin(other.cached_norms), std::end(other.cached_norms), std::begin(cached_norms));
         std::copy(std::begin(other.distances), std::end(other.distances), std::begin(distances));
     }
 
@@ -196,6 +236,12 @@ struct alignas(FLASH_CACHE_LINE) NeighborBlock {
                 std::copy(std::begin(other.magnitudes_transposed[k]), std::end(other.magnitudes_transposed[k]),
                           std::begin(magnitudes_transposed[k]));
             }
+            // Copy RaBitQ binary signs
+            for (size_t w = 0; w < SIGN_WORDS; ++w) {
+                std::copy(std::begin(other.signs_transposed[w]), std::end(other.signs_transposed[w]),
+                          std::begin(signs_transposed[w]));
+            }
+            std::copy(std::begin(other.cached_norms), std::end(other.cached_norms), std::begin(cached_norms));
             std::copy(std::begin(other.distances), std::end(other.distances), std::begin(distances));
         }
         return *this;
@@ -212,6 +258,12 @@ struct alignas(FLASH_CACHE_LINE) NeighborBlock {
                 std::copy(std::begin(other.magnitudes_transposed[k]), std::end(other.magnitudes_transposed[k]),
                           std::begin(magnitudes_transposed[k]));
             }
+            // Move RaBitQ binary signs
+            for (size_t w = 0; w < SIGN_WORDS; ++w) {
+                std::copy(std::begin(other.signs_transposed[w]), std::end(other.signs_transposed[w]),
+                          std::begin(signs_transposed[w]));
+            }
+            std::copy(std::begin(other.cached_norms), std::end(other.cached_norms), std::begin(cached_norms));
             std::copy(std::begin(other.distances), std::end(other.distances), std::begin(distances));
         }
         return *this;
@@ -271,6 +323,50 @@ struct alignas(FLASH_CACHE_LINE) NeighborBlock {
         for (size_t k = 0; k < K; ++k) {
             buffer[k] = magnitudes_transposed[k][i];
         }
+    }
+
+    // ========================================================================
+    // RaBitQ Binary Sign Accessors (Phase 1)
+    // ========================================================================
+
+    /// Get pointer to signs for word w (for SIMD batch load)
+    /// Returns pointer to signs_transposed[w][0..63]
+    const uint64_t* get_signs_row(size_t w) const {
+        return signs_transposed[w];
+    }
+
+    /// Get pointer to signs as 2D array (for rabitq_hamming_batch8)
+    /// Cast to the expected array type for the kernel
+    const uint64_t (*get_signs_transposed() const)[FLASH_MAX_M] {
+        return signs_transposed;
+    }
+
+    /// Set binary signs for neighbor i from a BinaryCode
+    template <size_t KCheck>
+    void set_neighbor_binary_signs(size_t i, const BinaryCode<KCheck>& binary) {
+        static_assert(KCheck == K, "BinaryCode K must match NeighborBlock K");
+        for (size_t w = 0; w < SIGN_WORDS; ++w) {
+            signs_transposed[w][i] = binary.signs[w];
+        }
+    }
+
+    /// Get binary signs for neighbor i as BinaryCode
+    BinaryCode<K> get_neighbor_binary_signs(size_t i) const {
+        BinaryCode<K> result;
+        for (size_t w = 0; w < SIGN_WORDS; ++w) {
+            result.signs[w] = signs_transposed[w][i];
+        }
+        return result;
+    }
+
+    /// Set cached norm for neighbor i
+    void set_neighbor_norm(size_t i, float norm) {
+        cached_norms[i] = norm;
+    }
+
+    /// Get cached norm for neighbor i
+    float get_neighbor_norm(size_t i) const {
+        return cached_norms[i];
     }
 };
 
@@ -831,5 +927,268 @@ private:
 using FlatHNSWGraph8 = FlatHNSWGraph<uint8_t, 16>;
 using FlatHNSWGraph16 = FlatHNSWGraph<uint16_t, 16>;
 using FlatHNSWGraph32 = FlatHNSWGraph<uint8_t, 32>;  // K=32 for Flash optimization
+
+// ============================================================================
+// Residual Neighbor Block (Phase 2 Optimization)
+// ============================================================================
+
+/**
+ * ResidualNeighborBlock: Extended storage for residual quantization.
+ *
+ * PHASE 2 OPTIMIZATION (PhD Portfolio):
+ * Stores both PRIMARY (K bits) and RESIDUAL (R bits) sign codes for each
+ * neighbor, enabling the combined distance formula:
+ *   combined = (primary_hamming << Shift) + residual_hamming
+ *
+ * Memory layout (SoA transposed for SIMD):
+ *   - primary_signs_transposed[PRIM_WORDS][64] - Primary signs
+ *   - residual_signs_transposed[RES_WORDS][64] - Residual signs
+ *
+ * Example for K=64, R=32 (default):
+ *   - PRIM_WORDS = 1, RES_WORDS = 1
+ *   - primary_signs_transposed[0][0..63] = word 0 for 64 neighbors
+ *   - residual_signs_transposed[0][0..63] = word 0 for 64 neighbors
+ *   - Memory: 64 * 8 + 64 * 8 = 1024 bytes for signs only
+ *
+ * Template parameters:
+ * - K: Primary code width (e.g., 64 bits)
+ * - R: Residual code width (typically K/2, e.g., 32 bits)
+ */
+template <size_t K, size_t R = K / 2>
+struct alignas(FLASH_CACHE_LINE) ResidualNeighborBlock {
+    /// Primary and residual word counts
+    static constexpr size_t PRIM_WORDS = (K + 63) / 64;
+    static constexpr size_t RES_WORDS = (R + 63) / 64;
+
+    /// Neighbor node IDs
+    NodeId ids[FLASH_MAX_M];
+
+    /// Primary signs in SoA transposed layout
+    /// Layout: primary_signs_transposed[word_idx][neighbor_idx]
+    alignas(64) uint64_t primary_signs_transposed[PRIM_WORDS][FLASH_MAX_M];
+
+    /// Residual signs in SoA transposed layout
+    /// Layout: residual_signs_transposed[word_idx][neighbor_idx]
+    alignas(64) uint64_t residual_signs_transposed[RES_WORDS][FLASH_MAX_M];
+
+    /// Cached norms for distance computation
+    float cached_norms[FLASH_MAX_M];
+
+    /// Cached combined distances for pruning
+    float distances[FLASH_MAX_M];
+
+    /// Number of neighbors
+    uint8_t count;
+
+    /// Per-node spinlock
+    mutable Spinlock lock;
+
+    /// Constructor
+    ResidualNeighborBlock() : count(0), lock() {
+        std::fill(std::begin(ids), std::end(ids), INVALID_NODE);
+        for (size_t w = 0; w < PRIM_WORDS; ++w) {
+            std::fill(std::begin(primary_signs_transposed[w]),
+                      std::end(primary_signs_transposed[w]), uint64_t(0));
+        }
+        for (size_t w = 0; w < RES_WORDS; ++w) {
+            std::fill(std::begin(residual_signs_transposed[w]),
+                      std::end(residual_signs_transposed[w]), uint64_t(0));
+        }
+        std::fill(std::begin(cached_norms), std::end(cached_norms), 1.0f);
+        std::fill(std::begin(distances), std::end(distances),
+                  std::numeric_limits<float>::max());
+    }
+
+    // ========================================================================
+    // Primary Sign Accessors
+    // ========================================================================
+
+    /// Get primary signs row for SIMD batch load
+    const uint64_t* get_primary_signs_row(size_t w) const {
+        return primary_signs_transposed[w];
+    }
+
+    /// Get primary signs as 2D array for batch kernel
+    const uint64_t (*get_primary_signs_transposed() const)[FLASH_MAX_M] {
+        return primary_signs_transposed;
+    }
+
+    /// Set primary signs for neighbor i from BinaryCode
+    void set_neighbor_primary_signs(size_t i, const BinaryCode<K>& binary) {
+        for (size_t w = 0; w < PRIM_WORDS; ++w) {
+            primary_signs_transposed[w][i] = binary.signs[w];
+        }
+    }
+
+    /// Get primary signs for neighbor i as BinaryCode
+    BinaryCode<K> get_neighbor_primary_signs(size_t i) const {
+        BinaryCode<K> result;
+        for (size_t w = 0; w < PRIM_WORDS; ++w) {
+            result.signs[w] = primary_signs_transposed[w][i];
+        }
+        return result;
+    }
+
+    // ========================================================================
+    // Residual Sign Accessors
+    // ========================================================================
+
+    /// Get residual signs row for SIMD batch load
+    const uint64_t* get_residual_signs_row(size_t w) const {
+        return residual_signs_transposed[w];
+    }
+
+    /// Get residual signs as 2D array for batch kernel
+    const uint64_t (*get_residual_signs_transposed() const)[FLASH_MAX_M] {
+        return residual_signs_transposed;
+    }
+
+    /// Set residual signs for neighbor i from BinaryCode
+    void set_neighbor_residual_signs(size_t i, const BinaryCode<R>& binary) {
+        for (size_t w = 0; w < RES_WORDS; ++w) {
+            residual_signs_transposed[w][i] = binary.signs[w];
+        }
+    }
+
+    /// Get residual signs for neighbor i as BinaryCode
+    BinaryCode<R> get_neighbor_residual_signs(size_t i) const {
+        BinaryCode<R> result;
+        for (size_t w = 0; w < RES_WORDS; ++w) {
+            result.signs[w] = residual_signs_transposed[w][i];
+        }
+        return result;
+    }
+
+    // ========================================================================
+    // Combined Residual Code Accessors
+    // ========================================================================
+
+    /// Set both primary and residual signs from ResidualBinaryCode
+    void set_neighbor_residual_code(size_t i, const ResidualBinaryCode<K, R>& code) {
+        set_neighbor_primary_signs(i, code.primary);
+        set_neighbor_residual_signs(i, code.residual);
+    }
+
+    /// Get both primary and residual signs as ResidualBinaryCode
+    ResidualBinaryCode<K, R> get_neighbor_residual_code(size_t i) const {
+        ResidualBinaryCode<K, R> code;
+        code.primary = get_neighbor_primary_signs(i);
+        code.residual = get_neighbor_residual_signs(i);
+        return code;
+    }
+
+    // ========================================================================
+    // Norm and Distance Accessors
+    // ========================================================================
+
+    /// Set cached norm for neighbor i
+    void set_neighbor_norm(size_t i, float norm) {
+        cached_norms[i] = norm;
+    }
+
+    /// Get cached norm for neighbor i
+    float get_neighbor_norm(size_t i) const {
+        return cached_norms[i];
+    }
+
+    /// Set cached distance for neighbor i
+    void set_neighbor_distance(size_t i, float dist) {
+        distances[i] = dist;
+    }
+
+    /// Get cached distance for neighbor i
+    float get_neighbor_distance(size_t i) const {
+        return distances[i];
+    }
+
+    // ========================================================================
+    // Copy/Move Operations
+    // ========================================================================
+
+    ResidualNeighborBlock(const ResidualNeighborBlock& other) : count(other.count), lock() {
+        std::copy(std::begin(other.ids), std::end(other.ids), std::begin(ids));
+        for (size_t w = 0; w < PRIM_WORDS; ++w) {
+            std::copy(std::begin(other.primary_signs_transposed[w]),
+                      std::end(other.primary_signs_transposed[w]),
+                      std::begin(primary_signs_transposed[w]));
+        }
+        for (size_t w = 0; w < RES_WORDS; ++w) {
+            std::copy(std::begin(other.residual_signs_transposed[w]),
+                      std::end(other.residual_signs_transposed[w]),
+                      std::begin(residual_signs_transposed[w]));
+        }
+        std::copy(std::begin(other.cached_norms), std::end(other.cached_norms),
+                  std::begin(cached_norms));
+        std::copy(std::begin(other.distances), std::end(other.distances),
+                  std::begin(distances));
+    }
+
+    ResidualNeighborBlock(ResidualNeighborBlock&& other) noexcept
+        : count(other.count), lock() {
+        std::copy(std::begin(other.ids), std::end(other.ids), std::begin(ids));
+        for (size_t w = 0; w < PRIM_WORDS; ++w) {
+            std::copy(std::begin(other.primary_signs_transposed[w]),
+                      std::end(other.primary_signs_transposed[w]),
+                      std::begin(primary_signs_transposed[w]));
+        }
+        for (size_t w = 0; w < RES_WORDS; ++w) {
+            std::copy(std::begin(other.residual_signs_transposed[w]),
+                      std::end(other.residual_signs_transposed[w]),
+                      std::begin(residual_signs_transposed[w]));
+        }
+        std::copy(std::begin(other.cached_norms), std::end(other.cached_norms),
+                  std::begin(cached_norms));
+        std::copy(std::begin(other.distances), std::end(other.distances),
+                  std::begin(distances));
+    }
+
+    ResidualNeighborBlock& operator=(const ResidualNeighborBlock& other) {
+        if (this != &other) {
+            count = other.count;
+            std::copy(std::begin(other.ids), std::end(other.ids), std::begin(ids));
+            for (size_t w = 0; w < PRIM_WORDS; ++w) {
+                std::copy(std::begin(other.primary_signs_transposed[w]),
+                          std::end(other.primary_signs_transposed[w]),
+                          std::begin(primary_signs_transposed[w]));
+            }
+            for (size_t w = 0; w < RES_WORDS; ++w) {
+                std::copy(std::begin(other.residual_signs_transposed[w]),
+                          std::end(other.residual_signs_transposed[w]),
+                          std::begin(residual_signs_transposed[w]));
+            }
+            std::copy(std::begin(other.cached_norms), std::end(other.cached_norms),
+                      std::begin(cached_norms));
+            std::copy(std::begin(other.distances), std::end(other.distances),
+                      std::begin(distances));
+        }
+        return *this;
+    }
+
+    ResidualNeighborBlock& operator=(ResidualNeighborBlock&& other) noexcept {
+        if (this != &other) {
+            count = other.count;
+            std::copy(std::begin(other.ids), std::end(other.ids), std::begin(ids));
+            for (size_t w = 0; w < PRIM_WORDS; ++w) {
+                std::copy(std::begin(other.primary_signs_transposed[w]),
+                          std::end(other.primary_signs_transposed[w]),
+                          std::begin(primary_signs_transposed[w]));
+            }
+            for (size_t w = 0; w < RES_WORDS; ++w) {
+                std::copy(std::begin(other.residual_signs_transposed[w]),
+                          std::end(other.residual_signs_transposed[w]),
+                          std::begin(residual_signs_transposed[w]));
+            }
+            std::copy(std::begin(other.cached_norms), std::end(other.cached_norms),
+                      std::begin(cached_norms));
+            std::copy(std::begin(other.distances), std::end(other.distances),
+                      std::begin(distances));
+        }
+        return *this;
+    }
+};
+
+// Common residual block type aliases
+using ResidualNeighborBlock64_32 = ResidualNeighborBlock<64, 32>;
+using ResidualNeighborBlock32_16 = ResidualNeighborBlock<32, 16>;
 
 }  // namespace cphnsw
