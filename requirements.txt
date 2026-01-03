@@ -1,0 +1,14 @@
+# Requirements for CP-HNSW evaluation scripts
+# Note: pyproject.toml is the source of truth for dependencies.
+# This file is provided for compatibility with pip install -r requirements.txt
+
+# Core dependencies
+numpy>=1.24.0
+pandas>=2.0.0
+matplotlib>=3.7.0
+
+# Optional: FAISS for baseline comparison
+# Install via conda for GPU support:
+#   conda install -c pytorch -c nvidia faiss-gpu=1.8.0
+# Or pip for CPU-only:
+#   pip install faiss-cpu

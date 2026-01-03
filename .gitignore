@@ -1,3 +1,117 @@
-cp-hnsw/evaluation/data/
+# =============================================================================
+# Build artifacts
+# =============================================================================
 build/
+cmake-build-*/
+*.o
+*.a
+*.so
+*.dylib
+
+# =============================================================================
+# Python virtual environment
+# =============================================================================
+.venv/
+venv/
+env/
+ENV/
+.python-version
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.pyd
+
+# Python packaging
+*.egg
+*.egg-info/
+dist/
+wheels/
+*.whl
+.eggs/
+
+# =============================================================================
+# Claude Code configuration (local, not tracked)
+# =============================================================================
+CLAUDE.md
+
+# =============================================================================
+# Data files and directories
+# =============================================================================
+# Evaluation data directories
 evaluation/data/
+cp-hnsw/evaluation/data/
+
+# Dataset files (large binary formats)
+*.fvecs
+*.ivecs
+*.bvecs
+*.bin
+*.npy
+*.npz
+
+# HDF5 files
+*.h5
+*.hdf5
+
+# Compressed datasets
+*.tar
+*.tar.gz
+*.tgz
+*.tar.bz2
+*.zip
+*.7z
+*.rar
+
+# CSV data (can be large)
+*.csv
+!evaluation/results/*.csv
+
+# Parquet files
+*.parquet
+
+# =============================================================================
+# Results and outputs (optional - uncomment to ignore)
+# =============================================================================
+# evaluation/results/
+# *.pdf
+# *.png
+
+# =============================================================================
+# IDE and editor files
+# =============================================================================
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# =============================================================================
+# Temporary and cache files
+# =============================================================================
+*.tmp
+*.temp
+*.cache
+.cache/
+*.log
+
+# Test and coverage
+.coverage
+htmlcov/
+.pytest_cache/
+.tox/
+.nox/
+
+# =============================================================================
+# Secrets and credentials (safety)
+# =============================================================================
+.env
+.env.*
+*.pem
+*.key
+secrets.json
+credentials.json
