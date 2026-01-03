@@ -1,10 +1,11 @@
 #include <gtest/gtest.h>
-#include "cphnsw/quantizer/hadamard.hpp"
+#include "cphnsw/encoder/transform/fht.hpp"
 #include <vector>
 #include <cmath>
 #include <random>
 
 using namespace cphnsw;
+using Float = float;  // Compatibility alias
 
 // Test that FHT is its own inverse (up to scaling)
 TEST(HadamardTest, SelfInverse) {

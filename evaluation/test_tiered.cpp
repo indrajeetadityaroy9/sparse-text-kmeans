@@ -7,7 +7,7 @@
  * 3. search_and_rerank provides higher recall than basic search
  */
 
-#include "../include/cphnsw/index/cp_hnsw_index.hpp"
+#include "../include/cphnsw/legacy/index/cp_hnsw_index.hpp"
 #include <iostream>
 #include <random>
 #include <chrono>

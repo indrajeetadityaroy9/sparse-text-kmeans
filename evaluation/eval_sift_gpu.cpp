@@ -12,7 +12,7 @@
  * - Re-ranking: 10-50x over CPU
  */
 
-#include "../include/cphnsw/index/cp_hnsw_index.hpp"
+#include "../include/cphnsw/legacy/index/cp_hnsw_index.hpp"
 #include "../include/cphnsw/cuda/gpu_encoder.cuh"
 #include "datasets/dataset_loader.hpp"
 #include "metrics/recall.hpp"

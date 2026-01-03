@@ -5,8 +5,8 @@
  * and performance regressions after architectural changes (SoA layout, GPU construction).
  */
 
-#include "../include/cphnsw/index/cp_hnsw_index.hpp"
-#include "../include/cphnsw/distance/hamming.hpp"
+#include "../include/cphnsw/legacy/index/cp_hnsw_index.hpp"
+#include "../include/cphnsw/legacy/distance/hamming.hpp"
 #include "../include/cphnsw/graph/flat_graph.hpp"
 #include <iostream>
 #include <vector>

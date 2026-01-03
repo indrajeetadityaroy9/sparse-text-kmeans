@@ -15,7 +15,8 @@
  *   ./eval_master --exp 1,2,4 --sift ~/datasets/sift1m/sift --output results/
  */
 
-#include "../include/cphnsw/index/cp_hnsw_index.hpp"
+// Legacy API - will be migrated to cphnsw/api/index.hpp
+#include "../include/cphnsw/legacy/index/cp_hnsw_index.hpp"
 #include "datasets/dataset_loader.hpp"
 #include "metrics/recall.hpp"
 #include "utils/common.hpp"

@@ -8,7 +8,7 @@
  * 4. Search and recall verification
  */
 
-#include "../include/cphnsw/index/cp_hnsw_index.hpp"
+#include "../include/cphnsw/legacy/index/cp_hnsw_index.hpp"
 #include "datasets/dataset_loader.hpp"
 #include <iostream>
 #include <iomanip>

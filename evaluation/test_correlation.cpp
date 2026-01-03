@@ -1,5 +1,5 @@
-#include "../include/cphnsw/quantizer/cp_encoder.hpp"
-#include "../include/cphnsw/distance/hamming.hpp"
+#include "../include/cphnsw/legacy/quantizer/cp_encoder.hpp"
+#include "../include/cphnsw/legacy/distance/hamming.hpp"
 #include <iostream>
 #include <random>
 #include <vector>

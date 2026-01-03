@@ -1,4 +1,4 @@
-#include "../include/cphnsw/index/cp_hnsw_index.hpp"
+#include "../include/cphnsw/legacy/index/cp_hnsw_index.hpp"
 #include "datasets/dataset_loader.hpp"
 #include "metrics/recall.hpp"
 #include <iostream>

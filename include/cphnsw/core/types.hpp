@@ -13,15 +13,22 @@ namespace cphnsw {
 // Configuration Constants
 // ============================================================================
 
+#ifndef CPHNSW_CACHE_LINE_SIZE_DEFINED
+#define CPHNSW_CACHE_LINE_SIZE_DEFINED
 constexpr size_t CACHE_LINE_SIZE = 64;
+#endif
 
 // ============================================================================
 // Basic Type Definitions
 // ============================================================================
 
+#ifndef CPHNSW_NODE_TYPES_DEFINED
+#define CPHNSW_NODE_TYPES_DEFINED
 /// Node identifier type (supports up to 4B nodes)
 using NodeId = uint32_t;
+/// Invalid node ID sentinel
 constexpr NodeId INVALID_NODE = std::numeric_limits<NodeId>::max();
+#endif
 
 // NOTE: LayerLevel removed for NSW flatten (single-layer graph)
 

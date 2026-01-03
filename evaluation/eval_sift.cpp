@@ -1,6 +1,7 @@
-#include "../include/cphnsw/index/cp_hnsw_index.hpp"
-#include "../include/cphnsw/quantizer/cp_encoder.hpp"
-#include "../include/cphnsw/distance/hamming.hpp"
+// Legacy API - will be migrated to cphnsw/api/index.hpp
+#include "../include/cphnsw/legacy/index/cp_hnsw_index.hpp"
+#include "../include/cphnsw/legacy/quantizer/cp_encoder.hpp"
+#include "../include/cphnsw/legacy/distance/hamming.hpp"
 #include "datasets/dataset_loader.hpp"
 #include "metrics/recall.hpp"
 #include "utils/common.hpp"

@@ -5,8 +5,8 @@
  * the source of R² ≈ 0.04 (encoding producing random noise).
  */
 
-#include "../include/cphnsw/quantizer/cp_encoder.hpp"
-#include "../include/cphnsw/distance/hamming.hpp"
+#include "../include/cphnsw/legacy/quantizer/cp_encoder.hpp"
+#include "../include/cphnsw/legacy/distance/hamming.hpp"
 #include "../include/cphnsw/graph/flat_graph.hpp"
 #include "datasets/dataset_loader.hpp"
 #include <iostream>
