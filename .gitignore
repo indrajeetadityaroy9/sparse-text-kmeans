@@ -9,13 +9,26 @@ cmake-build-*/
 *.dylib
 
 # =============================================================================
-# Python virtual environment
+# Python virtual environment (CRITICAL - never commit)
 # =============================================================================
+# Standard virtual environment directory names
 .venv/
 venv/
 env/
 ENV/
+.ENV/
+virtualenv/
+
+# Python version management
 .python-version
+.pyenv/
+
+# Conda environments
+.conda/
+conda-env/
+
+# Poetry/PDM virtual environments
+.pdm-build/
 
 # Python bytecode
 __pycache__/
@@ -31,11 +44,22 @@ dist/
 wheels/
 *.whl
 .eggs/
+pip-wheel-metadata/
 
 # =============================================================================
-# Data files and directories
+# Data files and directories (CRITICAL - large files, never commit)
 # =============================================================================
-# Evaluation data directories
+# Common data directory names
+data/
+datasets/
+dataset/
+sift/
+sift1m/
+gist/
+glove/
+deep/
+
+# Project-specific data directories
 evaluation/data/
 cp-hnsw/evaluation/data/
 
@@ -51,6 +75,10 @@ cp-hnsw/evaluation/data/
 *.h5
 *.hdf5
 
+# Pickle files (can be large)
+*.pkl
+*.pickle
+
 # Compressed datasets
 *.tar
 *.tar.gz
@@ -59,6 +87,8 @@ cp-hnsw/evaluation/data/
 *.zip
 *.7z
 *.rar
+*.gz
+*.xz
 
 # CSV data (can be large)
 *.csv
@@ -66,6 +96,10 @@ cp-hnsw/evaluation/data/
 
 # Parquet files
 *.parquet
+
+# Arrow/Feather files
+*.arrow
+*.feather
 
 # =============================================================================
 # Results and outputs (optional - uncomment to ignore)
